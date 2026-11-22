@@ -230,7 +230,7 @@ const NEW_SVC = '02a6c0d0-0451-4000-b000-fb3210111989';
 const NEW_CHR = '02a6c0d1-0451-4000-b000-fb3210111989';
 const NEW_SYNC = new Uint8Array([0xC0, 0x55, 0x02, 0x01, 0x00, 0x1A]); // active l'envoi auto des mesures
 const LS_KEY = 'planlaser.v1';
-const APP_VERSION = '13';
+const APP_VERSION = '14';
 const CLOSE_TOL = 0.10; // m : en dessous, l'écart de fermeture est une erreur de mesure, pas un mur
 
 const $ = s => document.querySelector(s);
@@ -763,7 +763,11 @@ function mtFrame(fr) {
     if (bt.awaitMeasure && payload.length === 4) {                       // réponse à 0x40 : en 1/20 mm, depuis l'avant
       const cal = bt.awaitMeasure === 'cal'; bt.awaitMeasure = false;
       const raw = new DataView(payload.buffer).getUint32(0, true) * 0.00005;
-      if (!(raw > 0)) return toast('Pas de mesure : vise une surface');
+      if (!(raw > 0)) {                                                  // 0 : le laser n'a pas mesuré (visée, menu ouvert…)
+        if ((bt.rmZero || 0) < 2) { bt.rmZero = (bt.rmZero || 0) + 1; log('Le laser a répondu 0 : nouvel essai (' + bt.rmZero + '/2)'); setTimeout(() => remoteMeasure(cal), 600); return; }
+        log('Le laser ne mesure pas : il doit être sur son écran de mesure (pas dans un menu)');
+        return toast('Le laser ne mesure pas : reviens à son écran de mesure, puis réessaie');
+      }
       // Juste après une mesure faite au bouton, le laser renvoie d'abord la valeur affichée au lieu de mesurer :
       // on l'ignore et on redemande une vraie mesure (une seule fois).
       if (!bt.rmResent && lastLaserMeasure != null && Math.abs(raw - lastLaserMeasure) < 0.0015) {
@@ -998,10 +1002,10 @@ function remoteMeasure(calibrate = false) {
   bt.awaitMeasure = calibrate ? 'cal' : true;
   mtSend(0x40, []).catch(e => { bt.awaitMeasure = false; toast('Commande refusée : ' + e.message); });
 }
-$('#btMeasure').onclick = () => { bt.rmResent = false; remoteMeasure(false); };
+$('#btMeasure').onclick = () => { bt.rmResent = false; bt.rmZero = 0; remoteMeasure(false); };
 $('#rmCal').onclick = () => {
   if (lastLaserMeasure == null || Date.now() - lastLaserAt > 120000) return toast('Mesure d\'abord avec le bouton du laser, puis touche Étalonner sans bouger');
-  bt.rmResent = false; remoteMeasure(true);
+  bt.rmResent = false; bt.rmZero = 0; remoteMeasure(true);
 };
 $('#rmOffset').addEventListener('change', e => { const v = num(e.target.value); if (isFinite(v) && Math.abs(v) < 1) setRmOffset(v); renderRmRef(); });
 $('#target').addEventListener('change', e => { state.target = e.target.value; save(); });
