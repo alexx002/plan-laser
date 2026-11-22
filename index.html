@@ -208,6 +208,7 @@ summary{cursor:pointer;font-size:14px;color:var(--mut)}
 
     <details>
       <summary>Journal Bluetooth (dépannage) · version <span id="appVer"></span></summary>
+      <div class="row wrap" style="margin:8px 0"><button id="logCopy">📋 Copier le journal</button><button id="logClear">Vider</button></div>
       <pre id="log"></pre>
     </details>
   </aside>
@@ -230,7 +231,7 @@ const NEW_SVC = '02a6c0d0-0451-4000-b000-fb3210111989';
 const NEW_CHR = '02a6c0d1-0451-4000-b000-fb3210111989';
 const NEW_SYNC = new Uint8Array([0xC0, 0x55, 0x02, 0x01, 0x00, 0x1A]); // active l'envoi auto des mesures
 const LS_KEY = 'planlaser.v1';
-const APP_VERSION = '15';
+const APP_VERSION = '16';
 const CLOSE_TOL = 0.10; // m : en dessous, l'écart de fermeture est une erreur de mesure, pas un mur
 
 const $ = s => document.querySelector(s);
@@ -1054,6 +1055,24 @@ $('#opAdd').onclick = () => {
   $('#opOff').value = ''; $('#opW').value = ''; $('#opH').value = '';
   commit();
 };
+
+// Copie du journal (avec le contexte utile au dépannage)
+function logText() {
+  const refs = Object.keys(RM_REFS).map(r => RM_REFS[r].name + ' ' + rmOffset(r).toFixed(4) + (rmCalibrated(r) ? ' (étalonné)' : '')).join(', ');
+  return 'Plan Laser version ' + APP_VERSION + ' · ' + new Date().toLocaleString('fr-FR') + '\n' +
+    'Laser : ' + (bt.dev ? bt.dev.name : 'non connecté') + ' · protocole ' + (bt.proto || '-') + (bt.raw ? ' (direct)' : '') + '\n' +
+    'Référence 🎯 : ' + RM_REFS[rmRef()].name + ' · corrections : ' + refs + '\n' +
+    '----\n' + $('#log').textContent.split('\n').reverse().join('\n').trim();   // ordre chronologique
+}
+$('#logCopy').onclick = async () => {
+  const t = logText();
+  try { await navigator.clipboard.writeText(t); return toast('Journal copié'); } catch (e) {}
+  const ta = document.createElement('textarea'); ta.value = t; ta.style.position = 'fixed'; ta.style.opacity = '0';
+  document.body.appendChild(ta); ta.select();
+  let ok = false; try { ok = document.execCommand('copy'); } catch (e) {}
+  ta.remove(); toast(ok ? 'Journal copié' : 'Copie impossible : sélectionne le texte du journal à la main');
+};
+$('#logClear').onclick = () => { $('#log').textContent = ''; toast('Journal vidé'); };
 
 let toastT;
 function toast(t) { const el = $('#toast'); el.textContent = t; el.classList.add('show'); clearTimeout(toastT); toastT = setTimeout(() => el.classList.remove('show'), 2600); }
