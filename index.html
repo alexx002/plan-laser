@@ -209,10 +209,15 @@ summary{cursor:pointer;font-size:14px;color:var(--mut)}
 <script>
 'use strict';
 /* ---------- Constantes ---------- */
-// Protocole BLE Bosch (GLM 50 C / 50-27 C…), issu du reverse engineering communautaire
-const SVC = '02a6c0d0-0451-4000-b000-fb3210111989';
-const CHR = '02a6c0d1-0451-4000-b000-fb3210111989';
-const SYNC = new Uint8Array([0xC0, 0x55, 0x02, 0x01, 0x00, 0x1A]); // active l'envoi auto des mesures
+// Protocoles BLE Bosch, issus du reverse engineering communautaire. Deux générations :
+// « MT » : GLM 50 C / 100 C (premières versions) — trames fragmentées, accusés de réception, CRC8
+const MT_SVC = '00005301-0000-0041-5253-534f46540000';
+const MT_TX = '00004301-0000-0041-5253-534f46540000';
+const MT_RX = '00004302-0000-0041-5253-534f46540000';
+// « récent » : GLM 50-27 C, 100-25 C… — trames C0 55 …
+const NEW_SVC = '02a6c0d0-0451-4000-b000-fb3210111989';
+const NEW_CHR = '02a6c0d1-0451-4000-b000-fb3210111989';
+const NEW_SYNC = new Uint8Array([0xC0, 0x55, 0x02, 0x01, 0x00, 0x1A]); // active l'envoi auto des mesures
 const LS_KEY = 'planlaser.v1';
 const CLOSE_TOL = 0.10; // m : en dessous, l'écart de fermeture est une erreur de mesure, pas un mur
 
@@ -576,7 +581,7 @@ function fillFromLaser(id) {
 }
 
 /* ---------- Bluetooth ---------- */
-const bt = { dev: null, chr: null, manual: false, tries: 0 };
+const bt = { dev: null, manual: false, tries: 0, proto: null, tx: null, rx: null, wq: Promise.resolve(), txSeq: 1, asm: [], asmSeq: -1, lastTs: null };
 const hex = b => Array.from(b, x => x.toString(16).padStart(2, '0')).join(' ');
 function log(t) {
   const el = $('#log'); const line = new Date().toLocaleTimeString('fr-FR') + '  ' + t + '\n';
@@ -590,6 +595,25 @@ function setBt(st, txt) {
   b.className = st === 'on' ? '' : 'primary';
   b.disabled = st === 'wait';
 }
+function crc8(data, iv = 0xAA, poly = 0xA6) {
+  let v = iv;
+  for (const byte of data) for (let i = 0; i < 8; i++) {
+    const x = (v >> 7) ^ ((byte >> (7 - i)) & 1);
+    v = (v << 1) & 0xFF; if (x) v ^= poly;
+  }
+  return v;
+}
+// Les écritures GATT doivent se suivre une par une
+function btWrite(chr, bytes, withResponse = true) {
+  const p = bt.wq.then(() => {
+    log('→ ' + hex(bytes));
+    if (withResponse && chr.writeValueWithResponse) return chr.writeValueWithResponse(bytes);
+    if (!withResponse && chr.writeValueWithoutResponse) return chr.writeValueWithoutResponse(bytes);
+    return chr.writeValue(bytes);
+  });
+  bt.wq = p.catch(e => log('Écriture : ' + e.message));
+  return p;
+}
 async function btClick() {
   if (!navigator.bluetooth) { $('#btWarn').hidden = false; return toast('Bluetooth web indisponible dans ce navigateur'); }
   if (bt.dev && bt.dev.gatt.connected) { bt.manual = true; bt.dev.gatt.disconnect(); return; }
@@ -597,8 +621,8 @@ async function btClick() {
     if (!bt.dev) {
       setBt('wait', 'Choisis ton GLM dans la liste…');
       bt.dev = await navigator.bluetooth.requestDevice({
-        filters: [{ services: [SVC] }, { namePrefix: 'GLM' }, { namePrefix: 'Bosch' }],
-        optionalServices: [SVC]
+        filters: [{ namePrefix: 'GLM' }, { namePrefix: 'Bosch' }, { services: [MT_SVC] }, { services: [NEW_SVC] }],
+        optionalServices: [MT_SVC, NEW_SVC]
       });
       bt.dev.addEventListener('gattserverdisconnected', onDisconnected);
     }
@@ -606,41 +630,87 @@ async function btClick() {
   } catch (e) {
     log('Erreur : ' + e.name + ' – ' + e.message);
     setBt('off', 'Non connecté');
+    if (bt.dev && bt.dev.gatt.connected) { bt.manual = true; bt.dev.gatt.disconnect(); }
     if (e.name === 'SecurityError') { bt.dev = null; $('#btWarn').hidden = false; toast('Bluetooth bloqué dans cette vue : ouvre la version hébergée en https'); }
-    else if (e.name !== 'NotFoundError') toast('Connexion impossible : ' + e.message);
+    else if (e.name === 'NotFoundError' && /cancel/i.test(e.message)) { bt.dev = null; }
+    else toast('Connexion impossible : ' + e.message);
   }
 }
 async function gattConnect() {
   setBt('wait', 'Connexion à ' + (bt.dev.name || 'GLM') + '…');
   const server = await bt.dev.gatt.connect();
-  const svc = await server.getPrimaryService(SVC);
-  const chr = await svc.getCharacteristic(CHR);
-  if (bt.chr) bt.chr.removeEventListener('characteristicvaluechanged', onData);
-  bt.chr = chr;
-  chr.addEventListener('characteristicvaluechanged', onData);
-  await chr.startNotifications();
-  await writeCmd(SYNC);
+  if (bt.rx) bt.rx.removeEventListener('characteristicvaluechanged', onData);
+  bt.wq = Promise.resolve(); bt.asm = []; bt.asmSeq = -1; bt.txSeq = 1; bt.proto = null;
+  let svc = null;
+  try { svc = await server.getPrimaryService(MT_SVC); bt.proto = 'mt'; } catch (e) {}
+  if (!svc) { try { svc = await server.getPrimaryService(NEW_SVC); bt.proto = 'new'; } catch (e) {} }
+  if (!svc) {
+    let list = '?'; try { list = (await server.getPrimaryServices()).map(x => x.uuid).join(', ') || 'aucun'; } catch (e) {}
+    log('Services accessibles : ' + list);
+    throw new Error('aucun service Bosch reconnu sur cet appareil');
+  }
+  if (bt.proto === 'mt') {
+    bt.tx = await svc.getCharacteristic(MT_TX);
+    bt.rx = await svc.getCharacteristic(MT_RX);
+    bt.rx.addEventListener('characteristicvaluechanged', onData);
+    await bt.rx.startNotifications();
+    await mtSend(0x50, [0x40, 0x00]); // commande « control » avec syncControl = 1 : envoi auto des mesures
+  } else {
+    bt.tx = bt.rx = await svc.getCharacteristic(NEW_CHR);
+    bt.rx.addEventListener('characteristicvaluechanged', onData);
+    await bt.rx.startNotifications();
+    await btWrite(bt.tx, NEW_SYNC, !bt.tx.properties.writeWithoutResponse);
+  }
   bt.manual = false; bt.tries = 0;
   setBt('on', 'Connecté · ' + (bt.dev.name || 'GLM'));
-  log('Connecté à ' + (bt.dev.name || '?') + ', synchro activée');
+  log('Connecté à ' + (bt.dev.name || '?') + ' · protocole ' + (bt.proto === 'mt' ? 'GLM 50 C / 100 C' : 'récent (-27 / -25)') + ' · synchro activée');
   toast('Télémètre connecté : appuie sur le bouton de mesure');
 }
-async function writeCmd(bytes) {
-  const c = bt.chr; log('→ ' + hex(bytes));
-  try {
-    if (c.properties.writeWithoutResponse && c.writeValueWithoutResponse) return await c.writeValueWithoutResponse(bytes);
-    if (c.writeValueWithResponse) return await c.writeValueWithResponse(bytes);
-    return await c.writeValue(bytes);
-  } catch (e) { log('Écriture : ' + e.message); return await c.writeValue(bytes); }
+// Protocole MT : [C0, commande, longueur, données…, CRC8] découpé en morceaux de 19 octets
+function mtSend(cmd, payload) {
+  const f = [0xC0, cmd, payload.length, ...payload]; f.push(crc8(f));
+  const count = Math.ceil(f.length / 19); let last;
+  for (let i = 0; i < count; i++) {
+    last = btWrite(bt.tx, new Uint8Array([((bt.txSeq << 4) | (count - 1 - i)) & 0xFF, ...f.slice(19 * i, 19 * (i + 1))]), true);
+  }
+  bt.txSeq = (bt.txSeq + 1) % 15;
+  return last;
 }
 function onData(e) {
   const dv = e.target.value, b = new Uint8Array(dv.buffer, dv.byteOffset, dv.byteLength);
   log('← ' + hex(b));
-  // Trame de mesure : C0 55 10 … , distance en float32 little-endian (mètres) aux octets 7 à 10
+  if (bt.proto === 'mt') return onMtData(b);
+  // Protocole récent : trame de mesure C0 55 10 …, distance en float32 little-endian (mètres) aux octets 7 à 10
   if (b.length >= 11 && b[0] === 0xC0 && b[1] === 0x55 && b[2] === 0x10) {
     const d = dv.getFloat32(7, true);
     if (isFinite(d) && d > 0 && d < 300) onMeasure(d);
   }
+}
+function onMtData(b) {
+  if (!b.length || b[0] === 0xFF) return;              // 0xFF : accusé de réception du laser
+  const seq = b[0];
+  btWrite(bt.tx, new Uint8Array([0xFF, seq, 0x00]), true); // on accuse réception de chaque morceau
+  if (seq !== bt.asmSeq - 1) bt.asm = [];
+  bt.asmSeq = seq; bt.asm.push(...b.slice(1));
+  if ((seq & 0x0F) !== 0) return;                       // il reste des morceaux
+  const fr = bt.asm; bt.asm = [];
+  if (crc8(fr) !== 0) return log('Trame ignorée (contrôle CRC faux)');
+  const type = (fr[0] & 0xC0) >> 6, h = type === 0 ? 0 : 1;
+  const payload = new Uint8Array(fr.slice(2 + h, 2 + h + fr[1 + h]));
+  if (type === 3 && fr[1] === 0x50) onMtSync(payload);  // le laser envoie une mesure
+  else if (type === 0 && (fr[0] & 0x3F)) log('Le laser répond avec le code d\'état ' + (fr[0] & 0x3F));
+}
+function onMtSync(p) {
+  if (p.length < 20) return log('Mesure trop courte (' + p.length + ' octets)');
+  const dv = new DataView(p.buffer, p.byteOffset, p.byteLength);
+  const type = p[0] & 0x1F, result = dv.getFloat32(16, true);
+  const ts = p.length >= 28 ? dv.getInt32(24, true) : 0;
+  log('Mesure reçue · type ' + type + ' · résultat ' + (Math.round(result * 1000) / 1000));
+  if (!(isFinite(result) && result > 0)) return;
+  if (ts && ts === bt.lastTs) return;                   // même mesure renvoyée
+  if (type !== 1) return toast('Mesure ignorée : mets le laser en mode « longueur » simple');
+  if (result >= 300) return;
+  bt.lastTs = ts; onMeasure(result);
 }
 async function onDisconnected() {
   log('Déconnecté');
@@ -870,6 +940,9 @@ let installEvt = null;
 window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); installEvt = e; $('#installItem').hidden = false; });
 window.addEventListener('appinstalled', () => toast('Appli installée : elle marche maintenant sans réseau'));
 if ('serviceWorker' in navigator && window.isSecureContext && location.protocol !== 'file:') {
+  // Nouvelle version installée : on recharge une fois pour l'utiliser
+  let hadCtrl = !!navigator.serviceWorker.controller, reloaded = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => { if (hadCtrl && !reloaded) { reloaded = true; location.reload(); } hadCtrl = true; });
   navigator.serviceWorker.register('sw.js').then(reg => {
     if (!navigator.serviceWorker.controller) {
       const w = reg.installing || reg.waiting;
