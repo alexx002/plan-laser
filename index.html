@@ -128,6 +128,10 @@ summary{cursor:pointer;font-size:14px;color:var(--mut)}
       <h3>Télémètre <span id="btDot" class="dot"></span><span id="btTxt">Non connecté</span></h3>
       <div class="row"><button id="btBtn" class="primary" style="flex:1">Connecter le GLM 50 C</button><button id="btMeasure" hidden>🎯 Mesurer</button></div>
       <div id="btWarn" class="warn" hidden>Le Bluetooth web n'est pas disponible ici. Ouvre cette page dans <b>Chrome sur Android</b>, via une adresse <b>https://</b>. Tu peux quand même saisir les longueurs à la main.</div>
+      <div class="row" id="rmRow" hidden>
+        <label>Correction 🎯 Mesurer (m) — avant → arrière du laser<input id="rmOffset" inputmode="decimal"></label>
+        <button id="rmCal">Étalonner</button>
+      </div>
       <div class="measure" id="measureBox"><span id="lastM">—</span><small>dernière mesure</small></div>
       <div class="row">
         <label>Quand une mesure arrive
@@ -219,7 +223,7 @@ const NEW_SVC = '02a6c0d0-0451-4000-b000-fb3210111989';
 const NEW_CHR = '02a6c0d1-0451-4000-b000-fb3210111989';
 const NEW_SYNC = new Uint8Array([0xC0, 0x55, 0x02, 0x01, 0x00, 0x1A]); // active l'envoi auto des mesures
 const LS_KEY = 'planlaser.v1';
-const APP_VERSION = '9';
+const APP_VERSION = '10';
 const CLOSE_TOL = 0.10; // m : en dessous, l'écart de fermeture est une erreur de mesure, pas un mur
 
 const $ = s => document.querySelector(s);
@@ -560,7 +564,7 @@ function delRoom() {
 }
 
 /* ---------- Mesures laser ---------- */
-let lastMeasureAt = 0;
+let lastMeasureAt = 0, lastLaserMeasure = null, lastLaserAt = 0;
 function onMeasure(d) {
   const now = Date.now();
   if (lastMeasure != null && Math.abs(d - lastMeasure) < 0.0005 && now - lastMeasureAt < 1200) return log('Doublon ignoré');
@@ -600,6 +604,7 @@ function setBt(st, txt) {
   b.className = st === 'on' ? '' : 'primary';
   b.disabled = st === 'wait';
   $('#btMeasure').hidden = !(st === 'on' && bt.proto === 'mt');
+  $('#rmRow').hidden = $('#btMeasure').hidden; $('#rmOffset').value = fmt(rmOffset(), 3);
 }
 function crc8(data, iv = 0xAA, poly = 0xA6) {
   let v = iv;
@@ -736,6 +741,7 @@ function mtFrame(fr) {
     if (payload.length >= 8) {
       const d = new DataView(payload.buffer).getFloat32(4, true);
       if (!(d > 0)) { log('Laser allumé'); return; }
+      lastLaserMeasure = d; lastLaserAt = Date.now();
       log('Mesure reçue (laser) · ' + d.toFixed(4) + ' m'); if (isFinite(d) && d < 300) onMeasure(d);
     }
     return;
@@ -744,23 +750,20 @@ function mtFrame(fr) {
     const st = fr[0] & 0x3F, cmd = bt.pending.shift();
     if (st) {
       log('Réponse avec code d\'état ' + st + ' (commande ignorée par le laser)');
-      if (bt.awaitMeasure && bt.rm < RM_VARIANTS.length) { bt.awaitMeasure = false; bt.rm++; setTimeout(remoteMeasure, 200); }
-      else if (bt.awaitMeasure) { bt.awaitMeasure = false; toast('Le laser refuse la mesure à distance'); }
+      if (bt.awaitMeasure) { bt.awaitMeasure = false; toast('Le laser refuse la mesure à distance'); }
       return;
     }
-    if (bt.awaitMeasure && payload.length >= 8) {                        // réponse à « control » : même format que les envois du laser
-      bt.awaitMeasure = false; rmSave();
-      const d = new DataView(payload.buffer).getFloat32(4, true);
-      if (!(d > 0)) {                                                    // le laser vient de s'allumer : on relance la mesure une fois
-        if (!bt.rmRetried) { bt.rmRetried = true; log('Laser allumé, mesure relancée'); setTimeout(remoteMeasure, 700); }
-        else toast('Pas de mesure : vise une surface');
-        return;
+    if (bt.awaitMeasure && payload.length === 4) {                       // réponse à 0x40 : en 1/20 mm, depuis l'avant
+      const cal = bt.awaitMeasure === 'cal'; bt.awaitMeasure = false;
+      const raw = new DataView(payload.buffer).getUint32(0, true) * 0.00005;
+      if (!(raw > 0)) return toast('Pas de mesure : vise une surface');
+      if (cal) {
+        state.rmOffset = Math.round((lastLaserMeasure - raw) * 10000) / 10000; save(); $('#rmOffset').value = fmt(state.rmOffset, 3);
+        log('Étalonnage : laser ' + lastLaserMeasure.toFixed(4) + ' − tablette ' + raw.toFixed(4) + ' = ' + state.rmOffset.toFixed(4) + ' m');
+        return toast('Correction réglée sur ' + fmt(state.rmOffset, 3) + ' m');
       }
-      log('Mesure reçue (tablette) · ' + d.toFixed(4) + ' m'); if (d < 300) onMeasure(d);
-    } else if (bt.awaitMeasure && bt.rm >= RM_VARIANTS.length && payload.length === 4) {   // secours 0x40 : 1/20 mm depuis l'avant
-      bt.awaitMeasure = false;
-      const d = new DataView(payload.buffer).getUint32(0, true) * 0.00005;
-      log('Mesure reçue (0x40, avant du boîtier) · ' + d.toFixed(4) + ' m'); if (d > 0 && d < 300) onMeasure(d);
+      const d = raw + rmOffset();
+      log('Mesure reçue (tablette) · ' + raw.toFixed(4) + ' + ' + rmOffset().toFixed(3) + ' = ' + d.toFixed(4) + ' m'); if (d < 300) onMeasure(d);
     }
     return;
   }
@@ -951,21 +954,20 @@ $('#menu').addEventListener('click', e => {
   if (a === 'new' && confirm('Commencer un nouveau projet ? (le projet actuel sera remplacé — enregistre-le avant si besoin)')) { snapshot(); state = newProject(); sel = -1; commit(); fit(); }
 });
 $('#btBtn').onclick = btClick;
-// Mesure à distance avec la commande « control » (0x50). Variantes essayées dans l'ordre, la bonne est mémorisée.
-// Octet 1 : synchro (0x40) + type de mesure ; octet 2 : références. Le GLM 50 C étiquette ses longueurs 0x0a / 0x08.
-const RM_VARIANTS = [[0x4A, 0x08], [0x4A, 0x00], [0x41, 0x08], [0x41, 0x00], [0x0A, 0x08], [0x01, 0x00]];
-function rmSave() { try { localStorage.setItem('planlaser.rm', String(bt.rm)); } catch (e) {} }
-function remoteMeasure() {
+// Mesure à distance : commande 0x40. Sur le GLM 50 C elle mesure depuis l'avant du boîtier (l'écran du laser
+// ne change pas) ; on ajoute la correction pour revenir à la référence arrière affichée par le laser.
+const rmOffset = () => (isFinite(state.rmOffset) ? state.rmOffset : 0.106);
+function remoteMeasure(calibrate = false) {
   if (bt.proto !== 'mt' || !(bt.dev && bt.dev.gatt.connected)) return;
-  bt.awaitMeasure = true;
-  const p = bt.rm < RM_VARIANTS.length ? mtSend(0x50, RM_VARIANTS[bt.rm]) : mtSend(0x40, []); // dernier recours : 0x40
-  p.catch(e => { bt.awaitMeasure = false; toast('Commande refusée : ' + e.message); });
+  bt.awaitMeasure = calibrate ? 'cal' : true;
+  mtSend(0x40, []).catch(e => { bt.awaitMeasure = false; toast('Commande refusée : ' + e.message); });
 }
-$('#btMeasure').onclick = () => {
-  if (bt.rm == null) { let v = 0; try { v = parseInt(localStorage.getItem('planlaser.rm') || '0', 10) || 0; } catch (e) {} bt.rm = Math.min(v, RM_VARIANTS.length); }
-  if (bt.rm >= RM_VARIANTS.length) bt.rm = 0;   // on retente les variantes à chaque nouvel appui
-  bt.rmRetried = false; remoteMeasure();
+$('#btMeasure').onclick = () => remoteMeasure(false);
+$('#rmCal').onclick = () => {
+  if (lastLaserMeasure == null || Date.now() - lastLaserAt > 120000) return toast('Mesure d\'abord avec le bouton du laser, puis touche Étalonner sans bouger');
+  remoteMeasure(true);
 };
+$('#rmOffset').addEventListener('change', e => { const v = num(e.target.value); if (isFinite(v) && Math.abs(v) < 1) { state.rmOffset = v; save(); } e.target.value = fmt(rmOffset(), 3); });
 $('#target').addEventListener('change', e => { state.target = e.target.value; save(); });
 $('#wake').addEventListener('change', e => setWake(e.target.checked));
 $('#roomName').addEventListener('change', e => { snapshot(); room().name = e.target.value.trim() || 'Pièce'; commit(); });
