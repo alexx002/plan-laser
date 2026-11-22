@@ -74,6 +74,8 @@ label.chk input{min-height:auto;width:20px;height:20px}
 .op button{min-height:36px;width:36px;padding:0}
 .opForm{background:var(--bg);border-radius:12px;padding:10px;margin-top:8px}
 .opForm>button{width:100%;margin-top:10px}
+.opForm input.wiz{outline:3px solid var(--sel);background:#fff4e5}
+#opWizHint{font-weight:600;color:#c26a00}
 details{padding:12px 14px}
 summary{cursor:pointer;font-size:14px;color:var(--mut)}
 #log{font-size:11px;max-height:220px;overflow:auto;background:#0f172a;color:#cbd5e1;padding:8px;border-radius:8px;white-space:pre-wrap;word-break:break-all}
@@ -193,11 +195,19 @@ summary{cursor:pointer;font-size:14px;color:var(--mut)}
       <h4>Portes et fenêtres</h4>
       <div id="opList"></div>
       <div class="opForm">
-        <div class="seg" id="opType"><button data-o="porte" class="on">🚪 Porte</button><button data-o="fenetre">🪟 Fenêtre</button></div>
-        <div class="row"><label>Distance depuis le début du mur (m) — vide = centrée<input id="opOff" inputmode="decimal"></label><button class="laser" data-fill="opOff">📏</button></div>
+        <div class="seg" id="opType"><button data-o="porte" class="on">🚪 Porte</button><button data-o="fenetre">🪟 Fenêtre</button><button data-o="passage">▯ Passage</button></div>
+        <p class="hint" style="margin-top:10px">Distance mesurée depuis :</p>
+        <div class="seg" id="opFrom" style="margin-top:4px"><button data-f="start" class="on">🟢 Début du mur</button><button data-f="end">⚪ Fin du mur</button></div>
+        <div class="row"><label>Distance du coin au bord de l'ouverture (m) — vide = centrée<input id="opOff" inputmode="decimal"></label><button class="laser" data-fill="opOff">📏</button></div>
         <div class="row"><label>Largeur (m)<input id="opW" inputmode="decimal"></label><button class="laser" data-fill="opW">📏</button></div>
         <div class="row"><label>Hauteur (m)<input id="opH" inputmode="decimal" placeholder="2,04"></label><button class="laser" data-fill="opH">📏</button></div>
-        <button id="opAdd">+ Ajouter l'ouverture</button>
+        <div class="row" id="opSillRow" hidden><label>Allège : du sol au bas de la fenêtre (m)<input id="opSill" inputmode="decimal"></label><button class="laser" data-fill="opSill">📏</button></div>
+        <div class="row wrap">
+          <button id="opWiz" class="primary" style="flex:1">🎯 Saisie au laser</button>
+          <button id="opAdd" style="flex:1">+ Ajouter à la main</button>
+          <button id="opCancel" hidden>Annuler</button>
+        </div>
+        <p class="hint" id="opWizHint"></p>
       </div>
     </section>
 
@@ -231,7 +241,7 @@ const NEW_SVC = '02a6c0d0-0451-4000-b000-fb3210111989';
 const NEW_CHR = '02a6c0d1-0451-4000-b000-fb3210111989';
 const NEW_SYNC = new Uint8Array([0xC0, 0x55, 0x02, 0x01, 0x00, 0x1A]); // active l'envoi auto des mesures
 const LS_KEY = 'planlaser.v1';
-const APP_VERSION = '17';
+const APP_VERSION = '18';
 const CLOSE_TOL = 0.10; // m : en dessous, l'écart de fermeture est une erreur de mesure, pas un mur
 
 const $ = s => document.querySelector(s);
@@ -372,6 +382,8 @@ function drawRoom(c, v, r, active, opt) {
       c.fillStyle = '#16a34a'; c.beginPath(); c.arc(x1, y1, 7, 0, Math.PI * 2); c.fill();
       c.font = '600 11px system-ui,sans-serif'; c.textAlign = 'center'; c.textBaseline = 'bottom';
       c.fillText('début', x1 + nin.x * 18, y1 + nin.y * 18 - 4);
+      c.fillStyle = '#64748b'; c.beginPath(); c.arc(x2, y2, 6, 0, Math.PI * 2); c.fill();
+      c.fillText('fin', x2 + nin.x * 18, y2 + nin.y * 18 - 4);
     }
   });
   // coins
@@ -402,6 +414,9 @@ function drawOpenings(c, v, sg, ux, uy, nin, lw, k, bg) {
       c.beginPath(); c.moveTo(p1x, p1y); c.lineTo(ex, ey); c.stroke();
       const a1 = Math.atan2(uy, ux), a2 = Math.atan2(nin.y, nin.x); let d = a2 - a1; while (d > Math.PI) d -= 2 * Math.PI; while (d < -Math.PI) d += 2 * Math.PI;
       c.setLineDash([4 * k, 3 * k]); c.beginPath(); c.arc(p1x, p1y, wpx, a1, a2, d < 0); c.stroke(); c.setLineDash([]);
+    } else if (o.type === 'passage') {
+      c.strokeStyle = '#64748b'; c.lineWidth = 1.2 * k; c.setLineDash([3 * k, 3 * k]);
+      c.beginPath(); c.moveTo(p1x, p1y); c.lineTo(p2x, p2y); c.stroke(); c.setLineDash([]);
     } else {
       c.strokeStyle = '#0284c7'; c.lineWidth = 1.6 * k; const o2 = lw * .45;
       c.beginPath();
@@ -411,7 +426,7 @@ function drawOpenings(c, v, sg, ux, uy, nin, lw, k, bg) {
     if (wpx > 28 * k) {
       const mx = (p1x + p2x) / 2 + nin.x * 14 * k, my = (p1y + p2y) / 2 + nin.y * 14 * k;
       c.font = `${11 * k}px system-ui,sans-serif`; c.textAlign = 'center'; c.textBaseline = 'middle';
-      c.fillStyle = o.type === 'porte' ? '#b45309' : '#0284c7'; c.fillText(fmt(o.w), mx, my);
+      c.fillStyle = o.type === 'porte' ? '#b45309' : o.type === 'passage' ? '#64748b' : '#0284c7'; c.fillText(fmt(o.w), mx, my);
     }
   });
 }
@@ -581,6 +596,7 @@ function onMeasure(d) {
   $('#lastM').textContent = fmt(d, 3) + ' m';
   const box = $('#measureBox'); box.classList.add('flash'); setTimeout(() => box.classList.remove('flash'), 600);
   try { navigator.vibrate && navigator.vibrate(40); } catch (e) {}
+  if (wiz && sel >= 0) return wizFeed(d);   // saisie d'ouverture en cours : la mesure remplit l'étape
   const r = room();
   switch (state.target) {
     case 'wall': addWall(d); break;
@@ -835,7 +851,11 @@ function renderExport() {
   const bw = Math.max(b.x2 - b.x1, 1), bh = Math.max(b.y2 - b.y1, 1);
   const s = Math.min((Wd - 2 * pad) / bw, 2600 / bh);
   const planH = bh * s + 2 * pad;
-  const rowsH = 70 + 48 * (state.rooms.length + 1);
+  const opLines = [];
+  state.rooms.forEach(r => geom(r).segs.forEach(sg => { if (!sg.tiny) (sg.wall.openings || []).forEach(o => opLines.push(
+    r.name + ' · mur ' + (sg.auto ? 'F' : sg.idx + 1) + ' · ' + (OP[o.type] || OP.porte).name + ' ' + fmt(o.w) + ' × ' + fmt(o.h || 0) + ' m · à ' + fmt(o.off) + ' m du début' + (o.sill != null ? ' · allège ' + fmt(o.sill) + ' m' : '')
+  )); }));
+  const rowsH = 70 + 48 * (state.rooms.length + 1) + (opLines.length ? 90 + 44 * opLines.length : 0);
   const c = document.createElement('canvas'); c.width = Wd; c.height = Math.round(head + planH + rowsH);
   const x = c.getContext('2d');
   x.fillStyle = '#fff'; x.fillRect(0, 0, c.width, c.height);
@@ -862,6 +882,10 @@ function renderExport() {
   });
   y += 48; x.beginPath(); x.moveTo(pad, y - 34); x.lineTo(Wd - pad, y - 34); x.stroke();
   x.font = '700 28px system-ui,sans-serif'; x.fillText('Total', cols[0], y); x.fillText(fmt(tot) + ' m²', cols[1], y);
+  if (opLines.length) {
+    y += 80; x.fillText('Ouvertures', pad, y); x.font = '26px system-ui,sans-serif';
+    opLines.forEach(t => { y += 44; x.fillText(t, pad, y); });
+  }
   return c;
 }
 const fileName = ext => (state.name || 'plan').replace(/[^\w\-àâäéèêëîïôöùûüç ]+/gi, '').trim().replace(/\s+/g, '_') + '.' + ext;
@@ -941,7 +965,7 @@ function renderPanel() {
   });
   // mur sélectionné
   const sec = $('#selSec');
-  if (sel < 0) { sec.hidden = true; return; }
+  if (sel < 0) { sec.hidden = true; wiz = null; panelSel = -1; return; }
   sec.hidden = false;
   const sg = g.segs[sel];
   $('#selTitle').textContent = sg.auto ? 'Mur de fermeture (calculé)' : 'Mur ' + (sel + 1);
@@ -949,14 +973,18 @@ function renderPanel() {
   $('#selTurn').value = Math.round(sg.turn * 100) / 100; $('#selTurn').disabled = sg.auto || sel === 0;
   $('#selApply').hidden = sg.auto;
   $('#selDel').textContent = sg.auto ? 'Rouvrir la pièce' : 'Supprimer le mur';
+  if (sel !== panelSel) { panelSel = sel; opEdit = -1; wiz = null; opClear(); }
   const ol = $('#opList'); ol.innerHTML = '';
   (sg.wall.openings || []).forEach((o, i) => {
     const d = document.createElement('div'); d.className = 'op';
-    d.innerHTML = `<span>${o.type === 'porte' ? '🚪 Porte' : '🪟 Fenêtre'} · à ${fmt(o.off)} m · ${fmt(o.w)} × ${fmt(o.h || 0)} m</span>`;
+    d.innerHTML = `<span>${opText(o)}</span>`;
+    const ed = document.createElement('button'); ed.textContent = '✎'; ed.title = 'Modifier';
+    ed.onclick = () => opLoad(o, i);
     const x = document.createElement('button'); x.textContent = '✕'; x.className = 'danger';
-    x.onclick = () => { snapshot(); sg.wall.openings.splice(i, 1); commit(); };
-    d.appendChild(x); ol.appendChild(d);
+    x.onclick = () => { snapshot(); sg.wall.openings.splice(i, 1); if (opEdit === i) opEdit = -1; commit(); };
+    d.appendChild(ed); d.appendChild(x); ol.appendChild(d);
   });
+  renderOpForm();
   if (!(sg.wall.openings || []).length) ol.innerHTML = '<p class="hint">Aucune ouverture sur ce mur.</p>';
 }
 
@@ -1044,24 +1072,76 @@ $('#selDel').onclick = () => {
   sel = -1; commit();
 };
 $('#selNone').onclick = () => { sel = -1; commit(); };
-$('#opType').addEventListener('click', e => {
-  const o = e.target.closest('button')?.dataset.o; if (!o) return; opType = o;
-  document.querySelectorAll('#opType button').forEach(b => b.classList.toggle('on', b.dataset.o === o));
-  $('#opH').placeholder = o === 'porte' ? '2,04' : '1,25';
-});
-$('#opAdd').onclick = () => {
+/* ---------- Ouvertures (portes, fenêtres, passages) ---------- */
+const OP = {
+  porte:   { label: '🚪 Porte',   name: 'Porte',   h: 2.04 },
+  fenetre: { label: '🪟 Fenêtre', name: 'Fenêtre', h: 1.25 },
+  passage: { label: '▯ Passage', name: 'Passage', h: 2.04 },
+};
+let opFrom = 'start', opEdit = -1, wiz = null, panelSel = -1;
+const opText = o => `${(OP[o.type] || OP.porte).label} · ${fmt(o.w)} × ${fmt(o.h || 0)} m · à ${fmt(o.off)} m du début` + (o.sill != null ? ` · allège ${fmt(o.sill)} m` : '');
+function opClear() { ['opOff', 'opW', 'opH', 'opSill'].forEach(id => { $('#' + id).value = ''; }); }
+function renderOpForm() {
+  document.querySelectorAll('#opType button').forEach(b => b.classList.toggle('on', b.dataset.o === opType));
+  document.querySelectorAll('#opFrom button').forEach(b => b.classList.toggle('on', b.dataset.f === opFrom));
+  $('#opH').placeholder = fmt(OP[opType].h);
+  $('#opSillRow').hidden = opType !== 'fenetre';
+  $('#opAdd').textContent = opEdit >= 0 ? '💾 Enregistrer' : '+ Ajouter à la main';
+  document.querySelectorAll('.opForm input').forEach(e => e.classList.remove('wiz'));
+  if (wiz) {
+    const id = wiz.steps[wiz.i]; $('#' + id).classList.add('wiz');
+    $('#opWizHint').textContent = `Étape ${wiz.i + 1}/${wiz.steps.length} : mesure ${WIZ_TXT[id]()} (bouton du laser ou 🎯)`;
+  } else $('#opWizHint').textContent = opEdit >= 0 ? 'Modification de l\'ouverture : corrige les valeurs puis Enregistrer.' : '';
+  $('#opWiz').hidden = !!wiz; $('#opCancel').hidden = !wiz && opEdit < 0;
+}
+const WIZ_TXT = {
+  opOff: () => 'la distance du coin (' + (opFrom === 'start' ? 'début 🟢' : 'fin ⚪') + ' du mur) au bord le plus proche de l\'ouverture',
+  opW: () => 'la largeur de l\'ouverture',
+  opH: () => 'la hauteur de l\'ouverture',
+  opSill: () => 'l\'allège (du sol au bas de la fenêtre)',
+};
+function wizFeed(d) {
+  const id = wiz.steps[wiz.i]; $('#' + id).value = fmt(d, 3); wiz.i++;
+  if (wiz.i >= wiz.steps.length) { wiz = null; addOpening(); }
+  else { renderOpForm(); toast('Étape suivante : ' + WIZ_TXT[wiz.steps[wiz.i]]()); }
+}
+function opLoad(o, i) {
+  opType = o.type in OP ? o.type : 'porte'; opFrom = 'start'; opEdit = i; wiz = null;
+  $('#opOff').value = fmt(o.off, 3); $('#opW').value = fmt(o.w, 3); $('#opH').value = fmt(o.h || 0, 3); $('#opSill').value = o.sill != null ? fmt(o.sill, 3) : '';
+  renderOpForm();
+}
+function addOpening() {
   const sg = geom(room()).segs[sel]; if (!sg) return;
-  const w = num($('#opW').value); if (!(w > 0)) return toast('Indique la largeur');
-  if (w > sg.len + 0.001) return toast('Plus large que le mur');
-  let off = num($('#opOff').value); if (!isFinite(off)) off = (sg.len - w) / 2;
-  if (off < 0 || off + w > sg.len + 0.001) return toast('L\'ouverture dépasse du mur');
-  let h = num($('#opH').value); if (!(h > 0)) h = opType === 'porte' ? 2.04 : 1.25;
+  const w = num($('#opW').value); if (!(w > 0)) { renderOpForm(); return toast('Indique la largeur'); }
+  if (w > sg.len + 0.001) { renderOpForm(); return toast('Plus large que le mur (' + fmt(sg.len) + ' m)'); }
+  let off = num($('#opOff').value);
+  if (!isFinite(off)) off = (sg.len - w) / 2;
+  else if (opFrom === 'end') off = sg.len - off - w;      // mesuré depuis la fin : on ramène au début du mur
+  if (off < -0.005 || off + w > sg.len + 0.005) { renderOpForm(); return toast('L\'ouverture dépasse du mur : vérifie la distance et le coin de départ'); }
+  off = clamp(off, 0, sg.len - w);
+  let h = num($('#opH').value); if (!(h > 0)) h = OP[opType].h;
+  const o = { type: opType, off, w, h };
+  const sill = num($('#opSill').value); if (opType === 'fenetre' && isFinite(sill) && sill >= 0) o.sill = sill;
   snapshot();
   if (!sg.wall.openings) sg.wall.openings = [];
-  sg.wall.openings.push({ type: opType, off, w, h });
-  $('#opOff').value = ''; $('#opW').value = ''; $('#opH').value = '';
-  commit();
+  if (opEdit >= 0 && opEdit < sg.wall.openings.length) sg.wall.openings[opEdit] = o; else sg.wall.openings.push(o);
+  toast((opEdit >= 0 ? 'Modifiée : ' : 'Ajoutée : ') + OP[opType].name + ' ' + fmt(w) + ' × ' + fmt(h) + ' m');
+  opEdit = -1; opClear(); commit();
+}
+$('#opType').addEventListener('click', e => {
+  const o = e.target.closest('button')?.dataset.o; if (!o) return; opType = o;
+  if (wiz) wiz.steps = opSteps().filter((_, j) => j >= 0), wiz.i = Math.min(wiz.i, wiz.steps.length - 1);
+  renderOpForm();
+});
+$('#opFrom').addEventListener('click', e => { const f = e.target.closest('button')?.dataset.f; if (!f) return; opFrom = f; renderOpForm(); });
+const opSteps = () => ['opOff', 'opW', 'opH'].concat(opType === 'fenetre' ? ['opSill'] : []);
+$('#opWiz').onclick = () => {
+  if (sel < 0) return;
+  opEdit = -1; opClear(); wiz = { steps: opSteps(), i: 0 }; renderOpForm();
+  toast('Mesure ' + WIZ_TXT.opOff());
 };
+$('#opCancel').onclick = () => { wiz = null; opEdit = -1; opClear(); renderOpForm(); };
+$('#opAdd').onclick = addOpening;
 
 // Copie du journal (avec le contexte utile au dépannage)
 function logText() {
