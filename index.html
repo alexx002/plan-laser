@@ -219,7 +219,7 @@ const NEW_SVC = '02a6c0d0-0451-4000-b000-fb3210111989';
 const NEW_CHR = '02a6c0d1-0451-4000-b000-fb3210111989';
 const NEW_SYNC = new Uint8Array([0xC0, 0x55, 0x02, 0x01, 0x00, 0x1A]); // active l'envoi auto des mesures
 const LS_KEY = 'planlaser.v1';
-const APP_VERSION = '5';
+const APP_VERSION = '6';
 const CLOSE_TOL = 0.10; // m : en dessous, l'écart de fermeture est une erreur de mesure, pas un mur
 
 const $ = s => document.querySelector(s);
@@ -582,7 +582,7 @@ function fillFromLaser(id) {
 }
 
 /* ---------- Bluetooth ---------- */
-const bt = { pending: [], dev: null, manual: false, tries: 0, proto: null, tx: null, rx: null, wq: Promise.resolve(), txSeq: 1, asm: [], asmSeq: -1, lastTs: null };
+const bt = { raw: false, rxCount: 0, pending: [], dev: null, manual: false, tries: 0, proto: null, tx: null, rx: null, wq: Promise.resolve(), txSeq: 1, asm: [], asmSeq: -1, lastTs: null };
 const hex = b => Array.from(b, x => x.toString(16).padStart(2, '0')).join(' ');
 function log(t) {
   const el = $('#log'); const line = new Date().toLocaleTimeString('fr-FR') + '  ' + t + '\n';
@@ -643,7 +643,7 @@ async function gattConnect() {
   setBt('wait', 'Connexion à ' + (bt.dev.name || 'GLM') + '…');
   const server = await bt.dev.gatt.connect();
   if (bt.rx) bt.rx.removeEventListener('characteristicvaluechanged', onData);
-  bt.wq = Promise.resolve(); bt.asm = []; bt.asmSeq = -1; bt.txSeq = 1; bt.proto = null; bt.pending = [];
+  bt.wq = Promise.resolve(); bt.asm = []; bt.asmSeq = -1; bt.txSeq = 1; bt.proto = null; bt.pending = []; bt.raw = false; bt.rxCount = 0;
   let svc = null;
   try { svc = await server.getPrimaryService(MT_SVC); bt.proto = 'mt'; } catch (e) {}
   if (!svc) { try { svc = await server.getPrimaryService(NEW_SVC); bt.proto = 'new'; } catch (e) {} }
@@ -667,6 +667,12 @@ async function gattConnect() {
     await bt.rx.startNotifications();
     await mtSend(0x50, [0x40, 0x00]); // « control » avec syncControl = 1 (GLM 100 C)
     await mtSend(0x55, [0x01, 0x00]); // envoi auto des mesures (variante utilisée par d'autres GLM)
+    // Sans aucune réponse, on passe au format direct (trame complète, sans octet de découpage)
+    setTimeout(() => {
+      if (bt.proto !== 'mt' || bt.rxCount || bt.raw || !(bt.dev && bt.dev.gatt.connected)) return;
+      bt.raw = true; log('Aucune réponse au format découpé : essai du format direct');
+      mtSend(0x55, [0x01, 0x00]); mtSend(0x50, [0x40, 0x00]);
+    }, 2000);
   } else {
     bt.tx = bt.rx = await svc.getCharacteristic(NEW_CHR);
     bt.rx.addEventListener('characteristicvaluechanged', onData);
@@ -682,6 +688,7 @@ async function gattConnect() {
 function mtSend(cmd, payload) {
   bt.pending.push(cmd); if (bt.pending.length > 10) bt.pending.shift();
   const f = [0xC0, cmd, payload.length, ...payload]; f.push(crc8(f));
+  if (bt.raw) return btWrite(bt.tx, new Uint8Array(f), true);
   const count = Math.ceil(f.length / 19); let last;
   for (let i = 0; i < count; i++) {
     last = btWrite(bt.tx, new Uint8Array([((bt.txSeq << 4) | (count - 1 - i)) & 0xFF, ...f.slice(19 * i, 19 * (i + 1))]), true);
@@ -691,7 +698,7 @@ function mtSend(cmd, payload) {
 }
 function onData(e) {
   const dv = e.target.value, b = new Uint8Array(dv.buffer, dv.byteOffset, dv.byteLength);
-  log('← ' + hex(b));
+  log('← ' + hex(b)); bt.rxCount++;
   if (bt.proto === 'mt') return onMtData(b);
   // Protocole récent : trame de mesure C0 55 10 …, distance en float32 little-endian (mètres) aux octets 7 à 10
   if (b.length >= 11 && b[0] === 0xC0 && b[1] === 0x55 && b[2] === 0x10) {
@@ -702,6 +709,7 @@ function onData(e) {
 function onMtData(b) {
   if (!b.length) return;
   if (b[0] === 0xFF) return;                            // accusé de réception du laser
+  if (bt.raw) return mtFrame(Array.from(b));            // format direct : une notification = une trame
   if (b[0] === 0xC0 && b.length > 3 && crc8(b) === 0) return mtFrame(Array.from(b)); // trame non fragmentée
   const seq = b[0];
   btWrite(bt.tx, new Uint8Array([0xFF, seq, 0x00]), true); // on accuse réception de chaque morceau
