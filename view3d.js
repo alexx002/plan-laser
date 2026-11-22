@@ -32,7 +32,7 @@ export function open(container, model, opts = {}) {
     floor: new T.MeshStandardMaterial({ color: 0xd8b98c, roughness: 0.8, side: T.DoubleSide }),
     glass: new T.MeshStandardMaterial({ color: 0x86c8ff, roughness: 0.1, transparent: true, opacity: 0.35, depthWrite: false }),
     door: new T.MeshStandardMaterial({ color: 0x9a6a3a, roughness: 0.7 }),
-    edge: new T.LineBasicMaterial({ color: 0x5b6573, transparent: true, opacity: 0.55 }),
+    wallTop: new T.MeshStandardMaterial({ color: 0x9aa3ad, roughness: 0.9 }),   // dessus des murs, plus foncé
   };
 
   let group = null;
@@ -108,15 +108,15 @@ function buildModel(model, opts, mats) {
 
     // Murs
     for (const w of room.walls) {
-      const piece = (a, b, z0, z1, mat, depth = WALL_T, inset = 0, edges = true) => {
+      const piece = (a, b, z0, z1, mat, depth = WALL_T, inset = 0) => {
         z1 = Math.min(z1, top); if (b - a < 0.005 || z1 - z0 < 0.005) return;
         const geo = new T.BoxGeometry(b - a, z1 - z0, depth);
-        const mesh = new T.Mesh(geo, mat);
+        // Faces d'une boîte : +x, -x, +y (dessus), -y, +z, -z → dessus foncé pour les murs
+        const mesh = new T.Mesh(geo, mat === mats.wall ? [mat, mat, mats.wallTop, mat, mat, mat] : mat);
         const mid = (a + b) / 2, off = inset + depth / 2;               // centre dans l'épaisseur, côté extérieur
         mesh.position.set(w.x1 + w.ux * mid + w.ox * off, (z0 + z1) / 2, w.y1 + w.uy * mid + w.oy * off);
         mesh.rotation.y = -Math.atan2(w.uy, w.ux);
         g.add(mesh);
-        if (edges) { const e = new T.LineSegments(new T.EdgesGeometry(geo), mats.edge); e.position.copy(mesh.position); e.rotation.copy(mesh.rotation); g.add(e); }
       };
       const ops = [...w.openings].sort((p, q) => p.off - q.off);
       let cur = -w.extS;
@@ -127,10 +127,10 @@ function buildModel(model, opts, mats) {
         const bottom = Math.max(0, o.sill || 0), upper = Math.min(H, bottom + (o.h || 0));
         if (bottom > 0) piece(a, b, 0, bottom, mats.wall);               // allège
         if (upper < H) piece(a, b, upper, H, mats.wall);                 // linteau
-        if (GLAZED[o.type]) piece(a, b, bottom, upper, mats.glass, 0.02, WALL_T / 2 - 0.01, false);
+        if (GLAZED[o.type]) piece(a, b, bottom, upper, mats.glass, 0.02, WALL_T / 2 - 0.01);
         if (o.type === 'porte') {                                        // porte fermée (1 ou 2 vantaux)
           const n = o.leaves === 2 ? 2 : 1, lw = (b - a) / n;
-          for (let i = 0; i < n; i++) piece(a + i * lw + 0.004, a + (i + 1) * lw - 0.004, 0, upper, mats.door, 0.04, WALL_T / 2 - 0.02, true);
+          for (let i = 0; i < n; i++) piece(a + i * lw + 0.004, a + (i + 1) * lw - 0.004, 0, upper, mats.door, 0.04, WALL_T / 2 - 0.02);
         }
         cur = b;
       }
