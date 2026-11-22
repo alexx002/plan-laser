@@ -128,9 +128,15 @@ summary{cursor:pointer;font-size:14px;color:var(--mut)}
       <h3>Télémètre <span id="btDot" class="dot"></span><span id="btTxt">Non connecté</span></h3>
       <div class="row"><button id="btBtn" class="primary" style="flex:1">Connecter le GLM 50 C</button><button id="btMeasure" hidden>🎯 Mesurer</button></div>
       <div id="btWarn" class="warn" hidden>Le Bluetooth web n'est pas disponible ici. Ouvre cette page dans <b>Chrome sur Android</b>, via une adresse <b>https://</b>. Tu peux quand même saisir les longueurs à la main.</div>
-      <div class="row" id="rmRow" hidden>
-        <label>Correction 🎯 Mesurer (m) — avant → arrière du laser<input id="rmOffset" inputmode="decimal"></label>
-        <button id="rmCal">Étalonner</button>
+      <div id="rmBox" hidden>
+        <p class="hint" style="margin-top:10px">🎯 Mesurer depuis :</p>
+        <div class="seg" id="rmRef" style="margin-top:6px">
+          <button data-r="back">⬇ Arrière du laser</button><button data-r="front">⬆ Avant du laser</button>
+        </div>
+        <div class="row" id="rmRow">
+          <label>Longueur du boîtier (m) — écart avant / arrière<input id="rmOffset" inputmode="decimal"></label>
+          <button id="rmCal">Étalonner</button>
+        </div>
       </div>
       <div class="measure" id="measureBox"><span id="lastM">—</span><small>dernière mesure</small></div>
       <div class="row">
@@ -223,7 +229,7 @@ const NEW_SVC = '02a6c0d0-0451-4000-b000-fb3210111989';
 const NEW_CHR = '02a6c0d1-0451-4000-b000-fb3210111989';
 const NEW_SYNC = new Uint8Array([0xC0, 0x55, 0x02, 0x01, 0x00, 0x1A]); // active l'envoi auto des mesures
 const LS_KEY = 'planlaser.v1';
-const APP_VERSION = '10';
+const APP_VERSION = '11';
 const CLOSE_TOL = 0.10; // m : en dessous, l'écart de fermeture est une erreur de mesure, pas un mur
 
 const $ = s => document.querySelector(s);
@@ -604,7 +610,7 @@ function setBt(st, txt) {
   b.className = st === 'on' ? '' : 'primary';
   b.disabled = st === 'wait';
   $('#btMeasure').hidden = !(st === 'on' && bt.proto === 'mt');
-  $('#rmRow').hidden = $('#btMeasure').hidden; $('#rmOffset').value = fmt(rmOffset(), 3);
+  $('#rmBox').hidden = $('#btMeasure').hidden; $('#rmOffset').value = fmt(rmOffset(), 3); renderRmRef();
 }
 function crc8(data, iv = 0xAA, poly = 0xA6) {
   let v = iv;
@@ -762,8 +768,8 @@ function mtFrame(fr) {
         log('Étalonnage : laser ' + lastLaserMeasure.toFixed(4) + ' − tablette ' + raw.toFixed(4) + ' = ' + state.rmOffset.toFixed(4) + ' m');
         return toast('Correction réglée sur ' + fmt(state.rmOffset, 3) + ' m');
       }
-      const d = raw + rmOffset();
-      log('Mesure reçue (tablette) · ' + raw.toFixed(4) + ' + ' + rmOffset().toFixed(3) + ' = ' + d.toFixed(4) + ' m'); if (d < 300) onMeasure(d);
+      const add = rmRef() === 'back' ? rmOffset() : 0, d = raw + add;
+      log('Mesure reçue (tablette, ' + (add ? 'arrière' : 'avant') + ') · ' + raw.toFixed(4) + (add ? ' + ' + add.toFixed(3) : '') + ' = ' + d.toFixed(4) + ' m'); if (d < 300) onMeasure(d);
     }
     return;
   }
@@ -957,6 +963,16 @@ $('#btBtn').onclick = btClick;
 // Mesure à distance : commande 0x40. Sur le GLM 50 C elle mesure depuis l'avant du boîtier (l'écran du laser
 // ne change pas) ; on ajoute la correction pour revenir à la référence arrière affichée par le laser.
 const rmOffset = () => (isFinite(state.rmOffset) ? state.rmOffset : 0.106);
+const rmRef = () => state.rmRef || 'back';
+function renderRmRef() {
+  document.querySelectorAll('#rmRef button').forEach(b => b.classList.toggle('on', b.dataset.r === rmRef()));
+  $('#rmRow').hidden = rmRef() !== 'back';
+}
+$('#rmRef').addEventListener('click', e => {
+  const r = e.target.closest('button')?.dataset.r; if (!r) return;
+  state.rmRef = r; save(); renderRmRef();
+  toast(r === 'back' ? 'Mesure depuis l\'arrière du laser (contre le mur)' : 'Mesure depuis l\'avant du laser');
+});
 function remoteMeasure(calibrate = false) {
   if (bt.proto !== 'mt' || !(bt.dev && bt.dev.gatt.connected)) return;
   bt.awaitMeasure = calibrate ? 'cal' : true;
