@@ -84,7 +84,7 @@ export function close() {
 function disposeGroup(g) {
   g.traverse(ob => {
     if (ob.geometry) ob.geometry.dispose();
-    if (ob.material && ob.material.map) { ob.material.map.dispose(); ob.material.dispose(); }
+    if (ob.material && !Array.isArray(ob.material) && ob.material.map) { ob.material.map.dispose(); ob.material.dispose(); }
   });
 }
 
