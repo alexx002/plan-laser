@@ -219,7 +219,7 @@ const NEW_SVC = '02a6c0d0-0451-4000-b000-fb3210111989';
 const NEW_CHR = '02a6c0d1-0451-4000-b000-fb3210111989';
 const NEW_SYNC = new Uint8Array([0xC0, 0x55, 0x02, 0x01, 0x00, 0x1A]); // active l'envoi auto des mesures
 const LS_KEY = 'planlaser.v1';
-const APP_VERSION = '3';
+const APP_VERSION = '4';
 const CLOSE_TOL = 0.10; // m : en dessous, l'écart de fermeture est une erreur de mesure, pas un mur
 
 const $ = s => document.querySelector(s);
@@ -608,6 +608,7 @@ function crc8(data, iv = 0xAA, poly = 0xA6) {
 function btWrite(chr, bytes, withResponse = true) {
   const p = bt.wq.then(() => {
     log('→ ' + hex(bytes));
+    if (withResponse && !chr.properties.write && chr.writeValueWithoutResponse) return chr.writeValueWithoutResponse(bytes);
     if (withResponse && chr.writeValueWithResponse) return chr.writeValueWithResponse(bytes);
     if (!withResponse && chr.writeValueWithoutResponse) return chr.writeValueWithoutResponse(bytes);
     return chr.writeValue(bytes);
@@ -651,8 +652,16 @@ async function gattConnect() {
     throw new Error('aucun service Bosch reconnu sur cet appareil');
   }
   if (bt.proto === 'mt') {
-    bt.tx = await svc.getCharacteristic(MT_TX);
-    bt.rx = await svc.getCharacteristic(MT_RX);
+    // Le GLM 100 C a deux caractéristiques (4301 écriture, 4302 réception) ; d'autres modèles n'en ont qu'une.
+    const chars = await svc.getCharacteristics();
+    const props = c => Object.entries({ lecture: c.properties.read, ecriture: c.properties.write, ecriture_sr: c.properties.writeWithoutResponse, notif: c.properties.notify, indic: c.properties.indicate }).filter(([, v]) => v).map(([k]) => k).join('+');
+    log('Caractéristiques : ' + chars.map(c => c.uuid.slice(4, 8) + ' (' + props(c) + ')').join(', '));
+    const canWrite = c => c.properties.write || c.properties.writeWithoutResponse;
+    const canNotify = c => c.properties.notify || c.properties.indicate;
+    bt.tx = chars.find(c => c.uuid === MT_TX && canWrite(c)) || chars.find(canWrite);
+    bt.rx = chars.find(c => c.uuid === MT_RX && canNotify(c)) || chars.find(c => c.uuid === MT_TX && canNotify(c)) || chars.find(canNotify);
+    if (!bt.tx || !bt.rx) throw new Error('caractéristiques d\'écriture ou de réception introuvables');
+    log('Écriture : ' + bt.tx.uuid.slice(4, 8) + ' · réception : ' + bt.rx.uuid.slice(4, 8));
     bt.rx.addEventListener('characteristicvaluechanged', onData);
     await bt.rx.startNotifications();
     await mtSend(0x50, [0x40, 0x00]); // commande « control » avec syncControl = 1 : envoi auto des mesures
