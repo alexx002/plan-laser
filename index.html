@@ -74,6 +74,8 @@ label.chk input{min-height:auto;width:20px;height:20px}
 .op button{min-height:36px;width:36px;padding:0}
 .opForm{background:var(--bg);border-radius:12px;padding:10px;margin-top:8px}
 .opForm>button{width:100%;margin-top:10px}
+#opType{display:grid;grid-template-columns:repeat(3,1fr)}
+#opType button{white-space:normal;line-height:1.15;padding:4px 6px}
 .opForm input.wiz{outline:3px solid var(--sel);background:#fff4e5}
 #opWizHint{font-weight:600;color:#c26a00}
 details{padding:12px 14px}
@@ -195,13 +197,26 @@ summary{cursor:pointer;font-size:14px;color:var(--mut)}
       <h4>Portes et fenêtres</h4>
       <div id="opList"></div>
       <div class="opForm">
-        <div class="seg" id="opType"><button data-o="porte" class="on">🚪 Porte</button><button data-o="fenetre">🪟 Fenêtre</button><button data-o="passage">▯ Passage</button></div>
+        <div class="seg" id="opType">
+          <button data-o="porte" class="on">🚪 Porte</button><button data-o="portefenetre">🚪🪟 Porte-fenêtre</button><button data-o="fenetre">🪟 Fenêtre</button>
+          <button data-o="baie">🏞️ Baie vitrée</button><button data-o="passage">▯ Passage</button><button data-o="passeplat">🍽️ Passe-plat</button>
+        </div>
+        <div id="opLeafBox">
+          <p class="hint" style="margin-top:10px">Vantaux :</p>
+          <div class="seg" id="opLeaves" style="margin-top:4px"><button data-l="1">1 vantail</button><button data-l="2">2 vantaux</button></div>
+          <div id="opHingeBox">
+            <p class="hint" style="margin-top:8px">Charnières :</p>
+            <div class="seg" id="opHinge" style="margin-top:4px"><button data-h="start">🟢 Côté début</button><button data-h="end">⚪ Côté fin</button></div>
+          </div>
+          <p class="hint" style="margin-top:8px">S'ouvre vers :</p>
+          <div class="seg" id="opSwing" style="margin-top:4px"><button data-s="in">↘ Intérieur</button><button data-s="out">↗ Extérieur</button></div>
+        </div>
         <p class="hint" style="margin-top:10px">Distance mesurée depuis :</p>
         <div class="seg" id="opFrom" style="margin-top:4px"><button data-f="start" class="on">🟢 Début du mur</button><button data-f="end">⚪ Fin du mur</button></div>
         <div class="row"><label>Distance du coin au bord de l'ouverture (m) — vide = centrée<input id="opOff" inputmode="decimal"></label><button class="laser" data-fill="opOff">📏</button></div>
         <div class="row"><label>Largeur (m)<input id="opW" inputmode="decimal"></label><button class="laser" data-fill="opW">📏</button></div>
         <div class="row"><label>Hauteur (m)<input id="opH" inputmode="decimal" placeholder="2,04"></label><button class="laser" data-fill="opH">📏</button></div>
-        <div class="row" id="opSillRow" hidden><label>Allège : du sol au bas de la fenêtre (m)<input id="opSill" inputmode="decimal"></label><button class="laser" data-fill="opSill">📏</button></div>
+        <div class="row" id="opSillRow" hidden><label>Allège : du sol au bas de l'ouverture (m)<input id="opSill" inputmode="decimal"></label><button class="laser" data-fill="opSill">📏</button></div>
         <div class="row wrap">
           <button id="opWiz" class="primary" style="flex:1">🎯 Saisie au laser</button>
           <button id="opAdd" style="flex:1">+ Ajouter à la main</button>
@@ -241,7 +256,7 @@ const NEW_SVC = '02a6c0d0-0451-4000-b000-fb3210111989';
 const NEW_CHR = '02a6c0d1-0451-4000-b000-fb3210111989';
 const NEW_SYNC = new Uint8Array([0xC0, 0x55, 0x02, 0x01, 0x00, 0x1A]); // active l'envoi auto des mesures
 const LS_KEY = 'planlaser.v1';
-const APP_VERSION = '18';
+const APP_VERSION = '20';
 const CLOSE_TOL = 0.10; // m : en dessous, l'écart de fermeture est une erreur de mesure, pas un mur
 
 const $ = s => document.querySelector(s);
@@ -408,25 +423,43 @@ function drawOpenings(c, v, sg, ux, uy, nin, lw, k, bg) {
     [[p1x, p1y], [p2x, p2y]].forEach(([x, y]) => { c.moveTo(x - nin.x * lw * .7, y - nin.y * lw * .7); c.lineTo(x + nin.x * lw * .7, y + nin.y * lw * .7); });
     c.stroke();
     const wpx = (b - a) * v.s;
-    if (o.type === 'porte') {
-      c.strokeStyle = '#b45309'; c.lineWidth = 1.6 * k;
-      const ex = p1x + nin.x * wpx, ey = p1y + nin.y * wpx;
-      c.beginPath(); c.moveTo(p1x, p1y); c.lineTo(ex, ey); c.stroke();
-      const a1 = Math.atan2(uy, ux), a2 = Math.atan2(nin.y, nin.x); let d = a2 - a1; while (d > Math.PI) d -= 2 * Math.PI; while (d < -Math.PI) d += 2 * Math.PI;
-      c.setLineDash([4 * k, 3 * k]); c.beginPath(); c.arc(p1x, p1y, wpx, a1, a2, d < 0); c.stroke(); c.setLineDash([]);
-    } else if (o.type === 'passage') {
-      c.strokeStyle = '#64748b'; c.lineWidth = 1.2 * k; c.setLineDash([3 * k, 3 * k]);
-      c.beginPath(); c.moveTo(p1x, p1y); c.lineTo(p2x, p2y); c.stroke(); c.setLineDash([]);
-    } else {
-      c.strokeStyle = '#0284c7'; c.lineWidth = 1.6 * k; const o2 = lw * .45;
-      c.beginPath();
-      [-o2, 0, o2].forEach(t => { c.moveTo(p1x + nin.x * t, p1y + nin.y * t); c.lineTo(p2x + nin.x * t, p2y + nin.y * t); });
+    const swing = col => {                                                   // battant(s) + arc(s)
+      const leaves = o.leaves === 2 ? 2 : 1, side = o.swing === 'out' ? -1 : 1;
+      const nx = nin.x * side, ny = nin.y * side, r = wpx / leaves;
+      const hinges = leaves === 2 ? [[p1x, p1y, ux, uy], [p2x, p2y, -ux, -uy]]
+        : o.hinge === 'end' ? [[p2x, p2y, -ux, -uy]] : [[p1x, p1y, ux, uy]];
+      c.strokeStyle = col; c.lineWidth = 1.6 * k;
+      hinges.forEach(([hx, hy, dx, dy]) => {
+        c.beginPath(); c.moveTo(hx, hy); c.lineTo(hx + nx * r, hy + ny * r); c.stroke();
+        const a1 = Math.atan2(dy, dx), a2 = Math.atan2(ny, nx); let d = a2 - a1; while (d > Math.PI) d -= 2 * Math.PI; while (d < -Math.PI) d += 2 * Math.PI;
+        c.setLineDash([4 * k, 3 * k]); c.beginPath(); c.arc(hx, hy, r, a1, a2, d < 0); c.stroke(); c.setLineDash([]);
+      });
+    };
+    const glass = (col, n) => {                                              // vitrage : n traits parallèles
+      c.strokeStyle = col; c.lineWidth = 1.6 * k; const o2 = lw * .45; c.beginPath();
+      (n === 3 ? [-o2, 0, o2] : [-o2 / 2, o2 / 2]).forEach(t => { c.moveTo(p1x + nin.x * t, p1y + nin.y * t); c.lineTo(p2x + nin.x * t, p2y + nin.y * t); });
       c.stroke();
+    };
+    const col = (OP[o.type] || OP.porte).color;
+    if (o.type === 'porte') swing(col);
+    else if (o.type === 'portefenetre') { glass(col, 2); swing(col); }
+    else if (o.type === 'baie') {                                            // deux vantaux coulissants décalés
+      c.strokeStyle = col; c.lineWidth = 2.4 * k; const t = lw * .55, mx = (p1x + p2x) / 2, my = (p1y + p2y) / 2;
+      const ox = (p2x - p1x) * 0.08, oy = (p2y - p1y) * 0.08; c.beginPath();
+      c.moveTo(p1x - nin.x * t, p1y - nin.y * t); c.lineTo(mx + ox - nin.x * t, my + oy - nin.y * t);
+      c.moveTo(mx - ox + nin.x * t, my - oy + nin.y * t); c.lineTo(p2x + nin.x * t, p2y + nin.y * t); c.stroke();
     }
+    else if (o.type === 'passage') { c.strokeStyle = col; c.lineWidth = 1.2 * k; c.setLineDash([3 * k, 3 * k]); c.beginPath(); c.moveTo(p1x, p1y); c.lineTo(p2x, p2y); c.stroke(); c.setLineDash([]); }
+    else if (o.type === 'passeplat') {                                       // ouverture en hauteur : tablette en pointillé + croix
+      c.strokeStyle = col; c.lineWidth = 1.4 * k; c.setLineDash([2 * k, 3 * k]); c.beginPath();
+      c.moveTo(p1x - nin.x * lw * .4, p1y - nin.y * lw * .4); c.lineTo(p2x + nin.x * lw * .4, p2y + nin.y * lw * .4);
+      c.moveTo(p1x + nin.x * lw * .4, p1y + nin.y * lw * .4); c.lineTo(p2x - nin.x * lw * .4, p2y - nin.y * lw * .4); c.stroke(); c.setLineDash([]);
+    }
+    else { glass(col, 2); if (o.leaves) swing(col); }                        // fenêtre (vantaux ouvrants)
     if (wpx > 28 * k) {
       const mx = (p1x + p2x) / 2 + nin.x * 14 * k, my = (p1y + p2y) / 2 + nin.y * 14 * k;
       c.font = `${11 * k}px system-ui,sans-serif`; c.textAlign = 'center'; c.textBaseline = 'middle';
-      c.fillStyle = o.type === 'porte' ? '#b45309' : o.type === 'passage' ? '#64748b' : '#0284c7'; c.fillText(fmt(o.w), mx, my);
+      c.fillStyle = col; c.fillText(fmt(o.w), mx, my);
     }
   });
 }
@@ -853,7 +886,7 @@ function renderExport() {
   const planH = bh * s + 2 * pad;
   const opLines = [];
   state.rooms.forEach(r => geom(r).segs.forEach(sg => { if (!sg.tiny) (sg.wall.openings || []).forEach(o => opLines.push(
-    r.name + ' · mur ' + (sg.auto ? 'F' : sg.idx + 1) + ' · ' + (OP[o.type] || OP.porte).name + ' ' + fmt(o.w) + ' × ' + fmt(o.h || 0) + ' m · à ' + fmt(o.off) + ' m du début' + (o.sill != null ? ' · allège ' + fmt(o.sill) + ' m' : '')
+    r.name + ' · mur ' + (sg.auto ? 'F' : sg.idx + 1) + ' · ' + (OP[o.type] || OP.porte).name + ' ' + fmt(o.w) + ' × ' + fmt(o.h || 0) + ' m · à ' + fmt(o.off) + ' m du début' + (o.sill != null ? ' · allège ' + fmt(o.sill) + ' m' : '') + leafText(o)
   )); }));
   const rowsH = 70 + 48 * (state.rooms.length + 1) + (opLines.length ? 90 + 44 * opLines.length : 0);
   const c = document.createElement('canvas'); c.width = Wd; c.height = Math.round(head + planH + rowsH);
@@ -1073,19 +1106,30 @@ $('#selDel').onclick = () => {
 };
 $('#selNone').onclick = () => { sel = -1; commit(); };
 /* ---------- Ouvertures (portes, fenêtres, passages) ---------- */
+// sill : l'ouverture ne part pas du sol → on demande l'allège (sol → bas de l'ouverture)
 const OP = {
-  porte:   { label: '🚪 Porte',   name: 'Porte',   h: 2.04 },
-  fenetre: { label: '🪟 Fenêtre', name: 'Fenêtre', h: 1.25 },
-  passage: { label: '▯ Passage', name: 'Passage', h: 2.04 },
+  porte:        { label: '🚪 Porte',          name: 'Porte',          h: 2.04, color: '#b45309', leaves: 1 },
+  portefenetre: { label: '🚪🪟 Porte-fenêtre', name: 'Porte-fenêtre',  h: 2.15, color: '#0f766e', leaves: 2 },
+  fenetre:      { label: '🪟 Fenêtre',        name: 'Fenêtre',        h: 1.25, color: '#0284c7', leaves: 2, sill: true },
+  baie:         { label: '🏞️ Baie vitrée',    name: 'Baie vitrée',    h: 2.15, color: '#0369a1' },
+  passage:      { label: '▯ Passage',         name: 'Passage',        h: 2.04, color: '#64748b' },
+  passeplat:    { label: '🍽️ Passe-plat',     name: 'Passe-plat',     h: 0.60, color: '#7c3aed', sill: true },
 };
 let opFrom = 'start', opEdit = -1, wiz = null, panelSel = -1;
-const opText = o => `${(OP[o.type] || OP.porte).label} · ${fmt(o.w)} × ${fmt(o.h || 0)} m · à ${fmt(o.off)} m du début` + (o.sill != null ? ` · allège ${fmt(o.sill)} m` : '');
+let opLeaves = 1, opHinge = 'start', opSwing = 'in';
+const leafText = o => !o.leaves ? '' : ' · ' + (o.leaves === 2 ? '2 vantaux' : '1 vantail, charnières côté ' + (o.hinge === 'end' ? 'fin' : 'début')) + ', ouvre vers l\'' + (o.swing === 'out' ? 'extérieur' : 'intérieur');
+const opText = o => `${(OP[o.type] || OP.porte).label} · ${fmt(o.w)} × ${fmt(o.h || 0)} m · à ${fmt(o.off)} m du début` + (o.sill != null ? ` · allège ${fmt(o.sill)} m` : '') + leafText(o);
 function opClear() { ['opOff', 'opW', 'opH', 'opSill'].forEach(id => { $('#' + id).value = ''; }); }
 function renderOpForm() {
   document.querySelectorAll('#opType button').forEach(b => b.classList.toggle('on', b.dataset.o === opType));
   document.querySelectorAll('#opFrom button').forEach(b => b.classList.toggle('on', b.dataset.f === opFrom));
   $('#opH').placeholder = fmt(OP[opType].h);
-  $('#opSillRow').hidden = opType !== 'fenetre';
+  $('#opSillRow').hidden = !OP[opType].sill;
+  $('#opLeafBox').hidden = !OP[opType].leaves; $('#opHingeBox').hidden = opLeaves !== 1;
+  document.querySelectorAll('#opLeaves button').forEach(b => b.classList.toggle('on', +b.dataset.l === opLeaves));
+  document.querySelectorAll('#opHinge button').forEach(b => b.classList.toggle('on', b.dataset.h === opHinge));
+  document.querySelectorAll('#opSwing button').forEach(b => b.classList.toggle('on', b.dataset.s === opSwing));
+  $('#opSill').placeholder = opType === 'passeplat' ? '1,00' : '0,95';
   $('#opAdd').textContent = opEdit >= 0 ? '💾 Enregistrer' : '+ Ajouter à la main';
   document.querySelectorAll('.opForm input').forEach(e => e.classList.remove('wiz'));
   if (wiz) {
@@ -1098,7 +1142,7 @@ const WIZ_TXT = {
   opOff: () => 'la distance du coin (' + (opFrom === 'start' ? 'début 🟢' : 'fin ⚪') + ' du mur) au bord le plus proche de l\'ouverture',
   opW: () => 'la largeur de l\'ouverture',
   opH: () => 'la hauteur de l\'ouverture',
-  opSill: () => 'l\'allège (du sol au bas de la fenêtre)',
+  opSill: () => 'l\'allège (du sol au bas de l\'ouverture)',
 };
 function wizFeed(d) {
   const id = wiz.steps[wiz.i]; $('#' + id).value = fmt(d, 3); wiz.i++;
@@ -1107,6 +1151,7 @@ function wizFeed(d) {
 }
 function opLoad(o, i) {
   opType = o.type in OP ? o.type : 'porte'; opFrom = 'start'; opEdit = i; wiz = null;
+  opLeaves = o.leaves || OP[opType].leaves || 1; opHinge = o.hinge || 'start'; opSwing = o.swing || 'in';
   $('#opOff').value = fmt(o.off, 3); $('#opW').value = fmt(o.w, 3); $('#opH').value = fmt(o.h || 0, 3); $('#opSill').value = o.sill != null ? fmt(o.sill, 3) : '';
   renderOpForm();
 }
@@ -1121,7 +1166,8 @@ function addOpening() {
   off = clamp(off, 0, sg.len - w);
   let h = num($('#opH').value); if (!(h > 0)) h = OP[opType].h;
   const o = { type: opType, off, w, h };
-  const sill = num($('#opSill').value); if (opType === 'fenetre' && isFinite(sill) && sill >= 0) o.sill = sill;
+  if (OP[opType].leaves) { o.leaves = opLeaves; o.swing = opSwing; if (opLeaves === 1) o.hinge = opHinge; }
+  const sill = num($('#opSill').value); if (OP[opType].sill && isFinite(sill) && sill >= 0) o.sill = sill;
   snapshot();
   if (!sg.wall.openings) sg.wall.openings = [];
   if (opEdit >= 0 && opEdit < sg.wall.openings.length) sg.wall.openings[opEdit] = o; else sg.wall.openings.push(o);
@@ -1130,11 +1176,15 @@ function addOpening() {
 }
 $('#opType').addEventListener('click', e => {
   const o = e.target.closest('button')?.dataset.o; if (!o) return; opType = o;
+  if (OP[o].leaves && opEdit < 0) opLeaves = OP[o].leaves;             // valeur habituelle du type
   if (wiz) wiz.steps = opSteps().filter((_, j) => j >= 0), wiz.i = Math.min(wiz.i, wiz.steps.length - 1);
   renderOpForm();
 });
+$('#opLeaves').addEventListener('click', e => { const l = e.target.closest('button')?.dataset.l; if (!l) return; opLeaves = +l; renderOpForm(); });
+$('#opHinge').addEventListener('click', e => { const h = e.target.closest('button')?.dataset.h; if (!h) return; opHinge = h; renderOpForm(); });
+$('#opSwing').addEventListener('click', e => { const v = e.target.closest('button')?.dataset.s; if (!v) return; opSwing = v; renderOpForm(); });
 $('#opFrom').addEventListener('click', e => { const f = e.target.closest('button')?.dataset.f; if (!f) return; opFrom = f; renderOpForm(); });
-const opSteps = () => ['opOff', 'opW', 'opH'].concat(opType === 'fenetre' ? ['opSill'] : []);
+const opSteps = () => ['opOff', 'opW', 'opH'].concat(OP[opType].sill ? ['opSill'] : []);
 $('#opWiz').onclick = () => {
   if (sel < 0) return;
   opEdit = -1; opClear(); wiz = { steps: opSteps(), i: 0 }; renderOpForm();
