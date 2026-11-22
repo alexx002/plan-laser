@@ -131,7 +131,7 @@ summary{cursor:pointer;font-size:14px;color:var(--mut)}
       <div id="rmBox" hidden>
         <p class="hint" style="margin-top:10px">🎯 Mesurer depuis :</p>
         <div class="seg" id="rmRef" style="margin-top:6px">
-          <button data-r="back">⬇ Arrière</button><button data-r="front">⬆ Avant</button><button data-r="tripod">⊙ Trépied</button>
+          <button data-r="back">⬇ Arrière</button><button data-r="front">⬆ Avant</button><button data-r="middle">◎ Milieu</button>
         </div>
         <div class="row" id="rmRow">
           <label><span id="rmLbl">Correction (m)</span><input id="rmOffset" inputmode="decimal"></label>
@@ -230,7 +230,7 @@ const NEW_SVC = '02a6c0d0-0451-4000-b000-fb3210111989';
 const NEW_CHR = '02a6c0d1-0451-4000-b000-fb3210111989';
 const NEW_SYNC = new Uint8Array([0xC0, 0x55, 0x02, 0x01, 0x00, 0x1A]); // active l'envoi auto des mesures
 const LS_KEY = 'planlaser.v1';
-const APP_VERSION = '14';
+const APP_VERSION = '15';
 const CLOSE_TOL = 0.10; // m : en dessous, l'écart de fermeture est une erreur de mesure, pas un mur
 
 const $ = s => document.querySelector(s);
@@ -974,8 +974,8 @@ $('#btBtn').onclick = btClick;
 // Mesure à distance : commande 0x40. Sur le GLM 50 C elle mesure depuis l'avant du boîtier (l'écran du laser
 // ne change pas) ; on ajoute la correction pour revenir à la référence arrière affichée par le laser.
 // La commande 0x40 mesure toujours au même point du boîtier ; une correction par référence ramène au point choisi.
-// Arrière : 0,106 m mesuré sur le laser d'Alex. Avant et trépied : à étalonner (valeurs de départ approximatives).
-const RM_REFS = { back: { name: 'arrière', def: 0.106 }, front: { name: 'avant', def: 0 }, tripod: { name: 'trépied', def: 0.040 } };
+// Arrière : 0,106 m mesuré sur le laser d'Alex. Avant et milieu (moitié du boîtier) : à étalonner.
+const RM_REFS = { back: { name: 'arrière', def: 0.106 }, front: { name: 'avant', def: 0 }, middle: { name: 'milieu', def: 0.053 } };
 const rmRef = () => (RM_REFS[state.rmRef] ? state.rmRef : 'back');
 const rmCalibrated = r => !!(state.rmOffsets && isFinite(state.rmOffsets[r])) || (r === 'back' && isFinite(state.rmOffset));
 const rmOffset = (r = rmRef()) => {
