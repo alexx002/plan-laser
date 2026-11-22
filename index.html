@@ -126,7 +126,7 @@ summary{cursor:pointer;font-size:14px;color:var(--mut)}
   <aside>
     <section>
       <h3>Télémètre <span id="btDot" class="dot"></span><span id="btTxt">Non connecté</span></h3>
-      <div class="row"><button id="btBtn" class="primary" style="flex:1">Connecter le GLM 50 C</button></div>
+      <div class="row"><button id="btBtn" class="primary" style="flex:1">Connecter le GLM 50 C</button><button id="btMeasure" hidden>🎯 Mesurer</button></div>
       <div id="btWarn" class="warn" hidden>Le Bluetooth web n'est pas disponible ici. Ouvre cette page dans <b>Chrome sur Android</b>, via une adresse <b>https://</b>. Tu peux quand même saisir les longueurs à la main.</div>
       <div class="measure" id="measureBox"><span id="lastM">—</span><small>dernière mesure</small></div>
       <div class="row">
@@ -219,7 +219,7 @@ const NEW_SVC = '02a6c0d0-0451-4000-b000-fb3210111989';
 const NEW_CHR = '02a6c0d1-0451-4000-b000-fb3210111989';
 const NEW_SYNC = new Uint8Array([0xC0, 0x55, 0x02, 0x01, 0x00, 0x1A]); // active l'envoi auto des mesures
 const LS_KEY = 'planlaser.v1';
-const APP_VERSION = '4';
+const APP_VERSION = '5';
 const CLOSE_TOL = 0.10; // m : en dessous, l'écart de fermeture est une erreur de mesure, pas un mur
 
 const $ = s => document.querySelector(s);
@@ -582,7 +582,7 @@ function fillFromLaser(id) {
 }
 
 /* ---------- Bluetooth ---------- */
-const bt = { dev: null, manual: false, tries: 0, proto: null, tx: null, rx: null, wq: Promise.resolve(), txSeq: 1, asm: [], asmSeq: -1, lastTs: null };
+const bt = { pending: [], dev: null, manual: false, tries: 0, proto: null, tx: null, rx: null, wq: Promise.resolve(), txSeq: 1, asm: [], asmSeq: -1, lastTs: null };
 const hex = b => Array.from(b, x => x.toString(16).padStart(2, '0')).join(' ');
 function log(t) {
   const el = $('#log'); const line = new Date().toLocaleTimeString('fr-FR') + '  ' + t + '\n';
@@ -595,6 +595,7 @@ function setBt(st, txt) {
   b.textContent = st === 'on' ? 'Déconnecter' : st === 'wait' ? 'Connexion…' : (bt.dev ? 'Reconnecter le GLM' : 'Connecter le GLM 50 C');
   b.className = st === 'on' ? '' : 'primary';
   b.disabled = st === 'wait';
+  $('#btMeasure').hidden = !(st === 'on' && bt.proto === 'mt');
 }
 function crc8(data, iv = 0xAA, poly = 0xA6) {
   let v = iv;
@@ -642,7 +643,7 @@ async function gattConnect() {
   setBt('wait', 'Connexion à ' + (bt.dev.name || 'GLM') + '…');
   const server = await bt.dev.gatt.connect();
   if (bt.rx) bt.rx.removeEventListener('characteristicvaluechanged', onData);
-  bt.wq = Promise.resolve(); bt.asm = []; bt.asmSeq = -1; bt.txSeq = 1; bt.proto = null;
+  bt.wq = Promise.resolve(); bt.asm = []; bt.asmSeq = -1; bt.txSeq = 1; bt.proto = null; bt.pending = [];
   let svc = null;
   try { svc = await server.getPrimaryService(MT_SVC); bt.proto = 'mt'; } catch (e) {}
   if (!svc) { try { svc = await server.getPrimaryService(NEW_SVC); bt.proto = 'new'; } catch (e) {} }
@@ -664,7 +665,8 @@ async function gattConnect() {
     log('Écriture : ' + bt.tx.uuid.slice(4, 8) + ' · réception : ' + bt.rx.uuid.slice(4, 8));
     bt.rx.addEventListener('characteristicvaluechanged', onData);
     await bt.rx.startNotifications();
-    await mtSend(0x50, [0x40, 0x00]); // commande « control » avec syncControl = 1 : envoi auto des mesures
+    await mtSend(0x50, [0x40, 0x00]); // « control » avec syncControl = 1 (GLM 100 C)
+    await mtSend(0x55, [0x01, 0x00]); // envoi auto des mesures (variante utilisée par d'autres GLM)
   } else {
     bt.tx = bt.rx = await svc.getCharacteristic(NEW_CHR);
     bt.rx.addEventListener('characteristicvaluechanged', onData);
@@ -678,6 +680,7 @@ async function gattConnect() {
 }
 // Protocole MT : [C0, commande, longueur, données…, CRC8] découpé en morceaux de 19 octets
 function mtSend(cmd, payload) {
+  bt.pending.push(cmd); if (bt.pending.length > 10) bt.pending.shift();
   const f = [0xC0, cmd, payload.length, ...payload]; f.push(crc8(f));
   const count = Math.ceil(f.length / 19); let last;
   for (let i = 0; i < count; i++) {
@@ -697,18 +700,36 @@ function onData(e) {
   }
 }
 function onMtData(b) {
-  if (!b.length || b[0] === 0xFF) return;              // 0xFF : accusé de réception du laser
+  if (!b.length) return;
+  if (b[0] === 0xFF) return;                            // accusé de réception du laser
+  if (b[0] === 0xC0 && b.length > 3 && crc8(b) === 0) return mtFrame(Array.from(b)); // trame non fragmentée
   const seq = b[0];
   btWrite(bt.tx, new Uint8Array([0xFF, seq, 0x00]), true); // on accuse réception de chaque morceau
   if (seq !== bt.asmSeq - 1) bt.asm = [];
   bt.asmSeq = seq; bt.asm.push(...b.slice(1));
   if ((seq & 0x0F) !== 0) return;                       // il reste des morceaux
   const fr = bt.asm; bt.asm = [];
+  mtFrame(fr);
+}
+function mtFrame(fr) {
   if (crc8(fr) !== 0) return log('Trame ignorée (contrôle CRC faux)');
   const type = (fr[0] & 0xC0) >> 6, h = type === 0 ? 0 : 1;
   const payload = new Uint8Array(fr.slice(2 + h, 2 + h + fr[1 + h]));
-  if (type === 3 && fr[1] === 0x50) onMtSync(payload);  // le laser envoie une mesure
-  else if (type === 0 && (fr[0] & 0x3F)) log('Le laser répond avec le code d\'état ' + (fr[0] & 0x3F));
+  if (type === 3 && fr[1] === 0x50) return onMtSync(payload);          // mesure envoyée par le laser (GLM 100 C)
+  if (type === 3 && fr[1] === 0x55) {                                    // mesure envoyée par le laser (variante 0x55)
+    if (payload.length >= 8) { const d = new DataView(payload.buffer).getFloat32(4, true); log('Mesure reçue (0x55) · ' + d); if (isFinite(d) && d > 0 && d < 300) onMeasure(d); }
+    return;
+  }
+  if (type === 0) {
+    const st = fr[0] & 0x3F, cmd = bt.pending.shift();
+    if (st) return log('Réponse à 0x' + (cmd ?? 0).toString(16) + ' : code d\'état ' + st);
+    if (cmd === 0x40 && payload.length >= 4) {                           // réponse à « mesurer » : 1/20 mm
+      const d = new DataView(payload.buffer).getUint32(0, true) * 0.00005;
+      log('Mesure reçue (0x40) · ' + d); if (d > 0 && d < 300) onMeasure(d);
+    }
+    return;
+  }
+  log('Trame type ' + type + ' commande 0x' + fr[1].toString(16) + ' non gérée');
 }
 function onMtSync(p) {
   if (p.length < 20) return log('Mesure trop courte (' + p.length + ' octets)');
@@ -895,6 +916,7 @@ $('#menu').addEventListener('click', e => {
   if (a === 'new' && confirm('Commencer un nouveau projet ? (le projet actuel sera remplacé — enregistre-le avant si besoin)')) { snapshot(); state = newProject(); sel = -1; commit(); fit(); }
 });
 $('#btBtn').onclick = btClick;
+$('#btMeasure').onclick = () => { if (bt.proto === 'mt') mtSend(0x40, []).catch(e => toast('Commande refusée : ' + e.message)); };
 $('#target').addEventListener('change', e => { state.target = e.target.value; save(); });
 $('#wake').addEventListener('change', e => setWake(e.target.checked));
 $('#roomName').addEventListener('change', e => { snapshot(); room().name = e.target.value.trim() || 'Pièce'; commit(); });
