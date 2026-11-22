@@ -230,7 +230,7 @@ const NEW_SVC = '02a6c0d0-0451-4000-b000-fb3210111989';
 const NEW_CHR = '02a6c0d1-0451-4000-b000-fb3210111989';
 const NEW_SYNC = new Uint8Array([0xC0, 0x55, 0x02, 0x01, 0x00, 0x1A]); // active l'envoi auto des mesures
 const LS_KEY = 'planlaser.v1';
-const APP_VERSION = '12';
+const APP_VERSION = '13';
 const CLOSE_TOL = 0.10; // m : en dessous, l'écart de fermeture est une erreur de mesure, pas un mur
 
 const $ = s => document.querySelector(s);
@@ -764,6 +764,12 @@ function mtFrame(fr) {
       const cal = bt.awaitMeasure === 'cal'; bt.awaitMeasure = false;
       const raw = new DataView(payload.buffer).getUint32(0, true) * 0.00005;
       if (!(raw > 0)) return toast('Pas de mesure : vise une surface');
+      // Juste après une mesure faite au bouton, le laser renvoie d'abord la valeur affichée au lieu de mesurer :
+      // on l'ignore et on redemande une vraie mesure (une seule fois).
+      if (!bt.rmResent && lastLaserMeasure != null && Math.abs(raw - lastLaserMeasure) < 0.0015) {
+        bt.rmResent = true; log('Le laser a renvoyé sa dernière valeur (' + raw.toFixed(4) + ' m) : nouvelle mesure demandée');
+        setTimeout(() => remoteMeasure(cal), 300); return;
+      }
       if (cal) {
         const v = Math.round((lastLaserMeasure - raw) * 10000) / 10000; setRmOffset(v); renderRmRef();
         log('Étalonnage ' + RM_REFS[rmRef()].name + ' : laser ' + lastLaserMeasure.toFixed(4) + ' − tablette ' + raw.toFixed(4) + ' = ' + v.toFixed(4) + ' m');
@@ -992,10 +998,10 @@ function remoteMeasure(calibrate = false) {
   bt.awaitMeasure = calibrate ? 'cal' : true;
   mtSend(0x40, []).catch(e => { bt.awaitMeasure = false; toast('Commande refusée : ' + e.message); });
 }
-$('#btMeasure').onclick = () => remoteMeasure(false);
+$('#btMeasure').onclick = () => { bt.rmResent = false; remoteMeasure(false); };
 $('#rmCal').onclick = () => {
   if (lastLaserMeasure == null || Date.now() - lastLaserAt > 120000) return toast('Mesure d\'abord avec le bouton du laser, puis touche Étalonner sans bouger');
-  remoteMeasure(true);
+  bt.rmResent = false; remoteMeasure(true);
 };
 $('#rmOffset').addEventListener('change', e => { const v = num(e.target.value); if (isFinite(v) && Math.abs(v) < 1) setRmOffset(v); renderRmRef(); });
 $('#target').addEventListener('change', e => { state.target = e.target.value; save(); });
