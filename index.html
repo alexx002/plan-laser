@@ -76,6 +76,7 @@ label.chk input{min-height:auto;width:20px;height:20px}
 .opForm>button{width:100%;margin-top:10px}
 #opType{display:grid;grid-template-columns:repeat(3,1fr)}
 #opType button{white-space:normal;line-height:1.15;padding:4px 6px}
+input.armed{outline:3px solid var(--sel);background:#fff4e5}
 .opForm input.wiz{outline:3px solid var(--sel);background:#fff4e5}
 #opWizHint{font-weight:600;color:#c26a00}
 details{padding:12px 14px}
@@ -271,7 +272,7 @@ const NEW_SVC = '02a6c0d0-0451-4000-b000-fb3210111989';
 const NEW_CHR = '02a6c0d1-0451-4000-b000-fb3210111989';
 const NEW_SYNC = new Uint8Array([0xC0, 0x55, 0x02, 0x01, 0x00, 0x1A]); // active l'envoi auto des mesures
 const LS_KEY = 'planlaser.v1';
-const APP_VERSION = '25';
+const APP_VERSION = '26';
 const CLOSE_TOL = 0.10; // m : en dessous, l'écart de fermeture est une erreur de mesure, pas un mur
 
 const $ = s => document.querySelector(s);
@@ -644,6 +645,7 @@ function onMeasure(d) {
   $('#lastM').textContent = fmt(d, 3) + ' m';
   const box = $('#measureBox'); box.classList.add('flash'); setTimeout(() => box.classList.remove('flash'), 600);
   try { navigator.vibrate && navigator.vibrate(40); } catch (e) {}
+  if (armed) return armedFeed(d);           // champ « 📏 » en attente : la mesure va dans ce champ
   if (wiz && sel >= 0) return wizFeed(d);   // saisie d'ouverture en cours : la mesure remplit l'étape
   const r = room();
   switch (state.target) {
@@ -655,10 +657,26 @@ function onMeasure(d) {
     case 'height': snapshot(); r.height = d; commit(); toast('Hauteur : ' + fmt(d) + ' m'); break;
   }
 }
-function fillFromLaser(id) {
-  if (lastMeasure == null) return toast('Aucune mesure reçue pour l\'instant');
-  const el = $('#' + id); el.value = fmt(lastMeasure, 3);
-  el.dispatchEvent(new Event('change'));
+// 📏 : la prochaine mesure (bouton du laser ou 🎯) remplit ce champ, sans créer de mur
+let armed = null;
+function setArmed(id) {
+  document.querySelectorAll('[data-fill]').forEach(b => b.classList.toggle('on', b.dataset.fill === id));
+  document.querySelectorAll('input.armed').forEach(e => e.classList.remove('armed'));
+  armed = id; if (id) $('#' + id).classList.add('armed');
+}
+function armField(id) {
+  if (armed === id) { setArmed(null); return toast('Mesure annulée'); }
+  setArmed(id);
+  const lbl = ($('#' + id).closest('label')?.childNodes[0]?.textContent || $('#' + id).placeholder || 'ce champ').trim();
+  if (bt.proto === 'mt' && bt.dev && bt.dev.gatt.connected) { toast('Mesure en cours → ' + lbl); $('#btMeasure').click(); }
+  else toast('Mesure avec le laser → ' + lbl);
+}
+function armedFeed(d) {
+  const id = armed; setArmed(null);
+  if (id === 'lenIn') return addWall(d);
+  const el = $('#' + id); el.value = fmt(d, 3); el.dispatchEvent(new Event('change'));
+  if (id === 'selLen') $('#selApply').click();
+  toast(fmt(d, 3) + ' m enregistré');
 }
 
 /* ---------- Bluetooth ---------- */
@@ -1108,7 +1126,7 @@ $('#customA').addEventListener('input', draw);
 $('#addWall').onclick = () => addWall(num($('#lenIn').value));
 $('#lenIn').addEventListener('keydown', e => { if (e.key === 'Enter') addWall(num(e.target.value)); });
 $('#closeBtn').onclick = toggleClose;
-document.querySelectorAll('[data-fill]').forEach(b => b.onclick = () => fillFromLaser(b.dataset.fill));
+document.querySelectorAll('[data-fill]').forEach(b => { b.title = 'Mesurer ce champ avec le laser'; b.onclick = () => armField(b.dataset.fill); });
 $('#selApply').onclick = () => {
   const r = room(), w = r.walls[sel]; if (!w) return;
   const L = num($('#selLen').value), T = num($('#selTurn').value);
