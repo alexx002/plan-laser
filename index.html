@@ -208,6 +208,8 @@ summary{cursor:pointer;font-size:14px;color:var(--mut)}
         <h4>📐 Angle du coin par diagonale</h4>
         <p class="hint" id="diagHint"></p>
         <div class="seg" id="diagSide" style="margin-top:6px"><button data-d="L">↰ Le mur tourne à gauche</button><button data-d="R">↱ Le mur tourne à droite</button></div>
+        <label class="chk"><input type="checkbox" id="diagWedge" checked> Laser calé dans le coin A : ses deux angles arrière touchent les murs (référence arrière)</label>
+        <div class="row" id="diagWRow"><label>Largeur du laser (m)<input id="diagW" inputmode="decimal"></label></div>
         <div class="row"><label>Diagonale A → B (m)<input id="diagIn" inputmode="decimal"></label><button class="laser" data-fill="diagIn">📏</button></div>
         <p class="hint" id="diagRes"></p>
       </div>
@@ -280,7 +282,7 @@ const NEW_SVC = '02a6c0d0-0451-4000-b000-fb3210111989';
 const NEW_CHR = '02a6c0d1-0451-4000-b000-fb3210111989';
 const NEW_SYNC = new Uint8Array([0xC0, 0x55, 0x02, 0x01, 0x00, 0x1A]); // active l'envoi auto des mesures
 const LS_KEY = 'planlaser.v1';
-const APP_VERSION = '27';
+const APP_VERSION = '28';
 const CLOSE_TOL = 0.10; // m : en dessous, l'écart de fermeture est une erreur de mesure, pas un mur
 
 const $ = s => document.querySelector(s);
@@ -1302,23 +1304,57 @@ function renderDiag(r, sg) {
   const side = diagSide || (w.turn < 0 ? 'L' : 'R');
   document.querySelectorAll('#diagSide button').forEach(b => b.classList.toggle('on', b.dataset.d === side));
   $('#diagHint').textContent = `Laser posé au point A (début du mur ${sel}), vise le point B (fin du mur ${sel + 1}). L'angle du coin entre les deux est alors calculé.`;
-  if (document.activeElement !== $('#diagIn')) $('#diagIn').value = w.diag ? fmt(w.diag, 3) : '';
-  $('#diagRes').textContent = w.diag ? `Angle mesuré : ${fmt(180 - Math.abs(w.turn), 1)}° (diagonale ${fmt(w.diag, 3)} m)` : `Angle actuel supposé : ${fmt(180 - Math.abs(w.turn), 1)}°`;
+  $('#diagWedge').checked = state.diagWedge !== false; $('#diagWRow').hidden = !$('#diagWedge').checked;
+  $('#diagW').value = fmt(laserW(), 3);
+  if (document.activeElement !== $('#diagIn')) $('#diagIn').value = w.diagRaw ? fmt(w.diagRaw, 3) : (w.diag ? fmt(w.diag, 3) : '');
+  $('#diagRes').textContent = w.diag
+    ? `Angle mesuré : ${fmt(180 - Math.abs(w.turn), 1)}° · diagonale ${fmt(w.diag, 3)} m` + (w.diagRaw && Math.abs(w.diag - w.diagRaw) > 0.0005 ? ` (lu ${fmt(w.diagRaw, 3)} m + ${fmt((w.diag - w.diagRaw) * 1000, 0)} mm de calage)` : '')
+    : `Angle actuel supposé : ${fmt(180 - Math.abs(w.turn), 1)}°`;
+}
+const laserW = () => (isFinite(state.laserW) && state.laserW > 0 ? state.laserW : 0.051);   // GLM 50 C : 51 mm de large
+const cornerAngle = (a, b, d) => Math.acos(clamp((a * a + b * b - d * d) / (2 * a * b), -1, 1)) * 180 / Math.PI; // loi des cosinus
+// Laser calé dans le coin A, ses deux angles arrière contre les murs : sa face arrière est une corde de largeur W,
+// perpendiculaire à la visée. On calcule où tombe le milieu de cette face (point de référence) et la vraie distance A → B.
+function wedgeCorrect(r, i, m, side) {
+  const W = laserW(), segs = geom(r).segs.filter(s => !s.tiny), s1 = segs[i - 1];
+  const e1 = { x: (s1.x2 - s1.x1) / s1.len, y: (s1.y2 - s1.y1) / s1.len };     // A → C, le long du mur précédent
+  const sIn = i - 2 >= 0 ? segs[i - 2] : (r.closed ? segs[segs.length - 1] : null);
+  let e2;                                                                          // l'autre mur du coin A, depuis A
+  if (sIn && sIn.len > 0) e2 = { x: -(sIn.x2 - sIn.x1) / sIn.len, y: -(sIn.y2 - sIn.y1) / sIn.len };
+  else e2 = side === 'L' ? { x: e1.y, y: -e1.x } : { x: -e1.y, y: e1.x };        // pas de mur connu : coin à 90°
+  const a = r.walls[i - 1].len, b = r.walls[i].len, h1 = Math.atan2(e1.y, e1.x);
+  let d = m + W / 2;
+  for (let it = 0; it < 6; it++) {
+    const C = cornerAngle(a, b, d), turn = (side === 'L' ? -1 : 1) * (180 - C) * Math.PI / 180;
+    const B = { x: a * e1.x + b * Math.cos(h1 + turn), y: a * e1.y + b * Math.sin(h1 + turn) };
+    const L = Math.hypot(B.x, B.y), u = { x: B.x / L, y: B.y / L };
+    const k = (e1.x * u.x + e1.y * u.y) / (e2.x * u.x + e2.y * u.y);
+    if (!isFinite(k) || k <= 0) return m;                                           // visée hors du coin : pas de correction
+    const vx = k * e2.x - e1.x, vy = k * e2.y - e1.y, s = W / Math.hypot(vx, vy);
+    const R = { x: (s * e1.x + s * k * e2.x) / 2, y: (s * e1.y + s * k * e2.y) / 2 };
+    d = Math.hypot(R.x + u.x * m, R.y + u.y * m);
+  }
+  return d;
 }
 function applyDiag() {
   const r = room(), w = r.walls[sel], prev = r.walls[sel - 1]; if (!w || !prev) return;
-  const a = prev.len, b = w.len, d = num($('#diagIn').value);
-  if (!(d > 0)) return;
-  if (d >= a + b - 0.001 || d <= Math.abs(a - b) + 0.001) return toast('Diagonale impossible avec ces deux murs : vérifie les points A et B');
-  const C = Math.acos(clamp((a * a + b * b - d * d) / (2 * a * b), -1, 1)) * 180 / Math.PI;   // loi des cosinus
+  const a = prev.len, b = w.len, m = num($('#diagIn').value);
+  if (!(m > 0)) return;
   const side = diagSide || (w.turn < 0 ? 'L' : 'R');
-  snapshot(); w.turn = (side === 'L' ? -1 : 1) * (180 - C); w.diag = d; diagSide = null;
-  commit(); toast('Angle du coin : ' + fmt(C, 1) + '°');
+  const wedge = state.diagWedge !== false;
+  if (wedge && state.rmRef && state.rmRef !== 'back') toast('Attention : le laser n\'est pas en référence arrière');
+  const d = wedge ? wedgeCorrect(r, sel, m, side) : m;
+  if (d >= a + b - 0.001 || d <= Math.abs(a - b) + 0.001) return toast('Diagonale impossible avec ces deux murs : vérifie les points A et B');
+  const C = cornerAngle(a, b, d);
+  snapshot(); w.turn = (side === 'L' ? -1 : 1) * (180 - C); w.diag = d; w.diagRaw = m; diagSide = null;
+  commit(); toast('Angle du coin : ' + fmt(C, 1) + '°' + (wedge ? ' (calage +' + fmt((d - m) * 1000, 0) + ' mm)' : ''));
 }
+$('#diagWedge').addEventListener('change', e => { state.diagWedge = e.target.checked; save(); const w = room().walls[sel]; if (w && w.diagRaw) applyDiag(); else renderPanel(); });
+$('#diagW').addEventListener('change', e => { const v = num(e.target.value); if (v > 0.01 && v < 0.2) { state.laserW = v; save(); } const w = room().walls[sel]; if (w && w.diagRaw) applyDiag(); else renderPanel(); });
 $('#diagSide').addEventListener('click', e => {
   const d = e.target.closest('button')?.dataset.d; if (!d) return; diagSide = d;
   const w = room().walls[sel];
-  if (w && w.diag) { $('#diagIn').value = fmt(w.diag, 3); applyDiag(); } else renderPanel();
+  if (w && w.diag) { $('#diagIn').value = fmt(w.diagRaw || w.diag, 3); applyDiag(); } else renderPanel();
 });
 $('#diagIn').addEventListener('change', applyDiag);
 
