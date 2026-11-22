@@ -192,6 +192,7 @@ summary{cursor:pointer;font-size:14px;color:var(--mut)}
       </div>
       <div class="row wrap"><button id="closeBtn" style="flex:1">⬠ Fermer la pièce</button></div>
       <p class="hint" id="closeInfo"></p>
+      <div class="row" id="fixRow" hidden><button id="fixClose" style="flex:1">⚖ Répartir l'écart sur les murs</button></div>
     </section>
 
     <section id="selSec" hidden>
@@ -202,6 +203,13 @@ summary{cursor:pointer;font-size:14px;color:var(--mut)}
         <button id="selApply" class="primary">Appliquer</button>
         <button id="selDel" class="danger">Supprimer le mur</button>
         <button id="selNone">Fermer</button>
+      </div>
+      <div id="diagBox">
+        <h4>📐 Angle du coin par diagonale</h4>
+        <p class="hint" id="diagHint"></p>
+        <div class="seg" id="diagSide" style="margin-top:6px"><button data-d="L">↰ Le mur tourne à gauche</button><button data-d="R">↱ Le mur tourne à droite</button></div>
+        <div class="row"><label>Diagonale A → B (m)<input id="diagIn" inputmode="decimal"></label><button class="laser" data-fill="diagIn">📏</button></div>
+        <p class="hint" id="diagRes"></p>
       </div>
       <h4>Portes et fenêtres</h4>
       <div id="opList"></div>
@@ -272,7 +280,7 @@ const NEW_SVC = '02a6c0d0-0451-4000-b000-fb3210111989';
 const NEW_CHR = '02a6c0d1-0451-4000-b000-fb3210111989';
 const NEW_SYNC = new Uint8Array([0xC0, 0x55, 0x02, 0x01, 0x00, 0x1A]); // active l'envoi auto des mesures
 const LS_KEY = 'planlaser.v1';
-const APP_VERSION = '26';
+const APP_VERSION = '27';
 const CLOSE_TOL = 0.10; // m : en dessous, l'écart de fermeture est une erreur de mesure, pas un mur
 
 const $ = s => document.querySelector(s);
@@ -361,6 +369,7 @@ function draw() {
   state.rooms.forEach((r, i) => { if (i !== state.active) drawRoom(ctx, view, r, false, { k: 1, bg: '#f6f7f9' }); });
   drawRoom(ctx, view, room(), true, { k: 1, bg: '#f6f7f9' });
   drawPen(ctx, view);
+  drawDiag(ctx, view);
   drawScaleBar(ctx, view, 16, H - 20, 1);
 }
 function drawGrid(c, w, h, v) {
@@ -491,6 +500,22 @@ function drawLabel(c, v, sg, out, k, color) {
   c.fillStyle = 'rgba(255,255,255,.88)'; c.fillRect(-w / 2, -9 * k, w, 18 * k);
   c.fillStyle = color; c.textAlign = 'center'; c.textBaseline = 'middle'; c.fillText(t, 0, 0);
   c.restore();
+}
+function drawDiag(c, v) {
+  // Diagonale du mur sélectionné : A (début du mur précédent) → B (fin de ce mur), angle au coin C
+  const r = room(), g = geom(r);
+  if (sel >= 1 && sel < r.walls.length) {
+    const A = g.pts[sel - 1], C = g.pts[sel], B = g.pts[sel + 1];
+    const [ax, ay] = S(v, A.x, A.y), [bx, by] = S(v, B.x, B.y), [cx, cy] = S(v, C.x, C.y);
+    c.strokeStyle = '#7c3aed'; c.lineWidth = 2; c.setLineDash([6, 5]);
+    c.beginPath(); c.moveTo(ax, ay); c.lineTo(bx, by); c.stroke(); c.setLineDash([]);
+    c.font = '700 13px system-ui,sans-serif'; c.textAlign = 'center'; c.textBaseline = 'middle';
+    [[ax, ay, 'A'], [bx, by, 'B']].forEach(([x, y, t]) => { c.fillStyle = '#7c3aed'; c.beginPath(); c.arc(x, y, 10, 0, Math.PI * 2); c.fill(); c.fillStyle = '#fff'; c.fillText(t, x, y + 0.5); });
+    const ang = 180 - Math.abs(r.walls[sel].turn);
+    c.fillStyle = '#7c3aed'; c.font = '700 12px system-ui,sans-serif';
+    const mx = (ax + bx) / 2 - cx, my = (ay + by) / 2 - cy, ml = Math.hypot(mx, my) || 1;
+    c.fillText(fmt(ang, 1) + '°', cx + mx / ml * 26, cy + my / ml * 26);
+  }
 }
 function drawPen(c, v) {
   const r = room(); if (r.closed) return;
@@ -1020,6 +1045,7 @@ function renderPanel() {
   if (!r.closed && r.walls.length >= 2) ci = `Écart avec le point de départ : ${fmt(g.gap * 100, 1)} cm. Fermer ${g.gap < CLOSE_TOL ? 'rejoindra le départ.' : 'ajoutera le dernier mur automatiquement.'}`;
   if (r.closed) ci = g.gap < CLOSE_TOL ? `Écart de fermeture : ${fmt(g.gap * 1000, 0)} mm${g.gap > 0.02 ? ' — vérifie une mesure ou un angle.' : ' ✓'}` : `Mur de fermeture calculé : ${fmt(g.gap, 3)} m (marqué *).`;
   $('#closeInfo').textContent = ci;
+  $('#fixRow').hidden = !(r.closed && g.gap < CLOSE_TOL && g.gap > 0.001);
   // liste des murs
   const wl = $('#wallList'); wl.innerHTML = '';
   if (!g.segs.length) wl.innerHTML = '<p class="hint">Aucun mur. Connecte le laser et mesure, ou tape une longueur.</p>';
@@ -1027,7 +1053,7 @@ function renderPanel() {
     if (sg.tiny) return;
     const b = document.createElement('button'); b.className = 'wl' + (sg.idx === sel ? ' sel' : '');
     const n = (sg.wall.openings || []).length;
-    b.innerHTML = `<b>${sg.auto ? 'F' : sg.idx + 1}</b>${fmt(sg.len, 3)} m${n ? ` · ${n} ouv.` : ''}<em>${sg.auto ? 'calculé' : turnTxt(sg.turn, sg.idx === 0)}</em>`;
+    b.innerHTML = `<b>${sg.auto ? 'F' : sg.idx + 1}</b>${fmt(sg.len, 3)} m${n ? ` · ${n} ouv.` : ''}<em>${sg.auto ? 'calculé' : turnTxt(sg.turn, sg.idx === 0) + (sg.wall.diag ? ' 📐' : '')}</em>`;
     b.onclick = () => { sel = sel === sg.idx ? -1 : sg.idx; commit(); };
     wl.appendChild(b);
   });
@@ -1041,6 +1067,7 @@ function renderPanel() {
   $('#selTurn').value = Math.round(sg.turn * 100) / 100; $('#selTurn').disabled = sg.auto || sel === 0;
   $('#selApply').hidden = sg.auto;
   $('#selDel').textContent = sg.auto ? 'Rouvrir la pièce' : 'Supprimer le mur';
+  renderDiag(r, sg);
   if (sel !== panelSel) { panelSel = sel; opEdit = -1; wiz = null; opClear(); }
   const ol = $('#opList'); ol.innerHTML = '';
   (sg.wall.openings || []).forEach((o, i) => {
@@ -1265,6 +1292,54 @@ if ('serviceWorker' in navigator && window.isSecureContext && location.protocol 
     }
   }).catch(err => log('Service worker : ' + err.message));
 }
+
+/* ---------- Angles par diagonale et compensation de la fermeture ---------- */
+let diagSide = null;   // 'L' ou 'R' choisi par l'utilisateur ; null = déduit du virage actuel
+function renderDiag(r, sg) {
+  const box = $('#diagBox'), ok = !sg.auto && sel >= 1;
+  box.hidden = !ok; if (!ok) return;
+  const w = r.walls[sel], prev = r.walls[sel - 1];
+  const side = diagSide || (w.turn < 0 ? 'L' : 'R');
+  document.querySelectorAll('#diagSide button').forEach(b => b.classList.toggle('on', b.dataset.d === side));
+  $('#diagHint').textContent = `Laser posé au point A (début du mur ${sel}), vise le point B (fin du mur ${sel + 1}). L'angle du coin entre les deux est alors calculé.`;
+  if (document.activeElement !== $('#diagIn')) $('#diagIn').value = w.diag ? fmt(w.diag, 3) : '';
+  $('#diagRes').textContent = w.diag ? `Angle mesuré : ${fmt(180 - Math.abs(w.turn), 1)}° (diagonale ${fmt(w.diag, 3)} m)` : `Angle actuel supposé : ${fmt(180 - Math.abs(w.turn), 1)}°`;
+}
+function applyDiag() {
+  const r = room(), w = r.walls[sel], prev = r.walls[sel - 1]; if (!w || !prev) return;
+  const a = prev.len, b = w.len, d = num($('#diagIn').value);
+  if (!(d > 0)) return;
+  if (d >= a + b - 0.001 || d <= Math.abs(a - b) + 0.001) return toast('Diagonale impossible avec ces deux murs : vérifie les points A et B');
+  const C = Math.acos(clamp((a * a + b * b - d * d) / (2 * a * b), -1, 1)) * 180 / Math.PI;   // loi des cosinus
+  const side = diagSide || (w.turn < 0 ? 'L' : 'R');
+  snapshot(); w.turn = (side === 'L' ? -1 : 1) * (180 - C); w.diag = d; diagSide = null;
+  commit(); toast('Angle du coin : ' + fmt(C, 1) + '°');
+}
+$('#diagSide').addEventListener('click', e => {
+  const d = e.target.closest('button')?.dataset.d; if (!d) return; diagSide = d;
+  const w = room().walls[sel];
+  if (w && w.diag) { $('#diagIn').value = fmt(w.diag, 3); applyDiag(); } else renderPanel();
+});
+$('#diagIn').addEventListener('change', applyDiag);
+
+// Compensation proportionnelle aux longueurs (méthode des géomètres) : l'écart de fermeture est réparti sur tous les coins
+function distributeClosure() {
+  const r = room(), g = geom(r), n = r.walls.length;
+  const ex = g.pts[n].x - g.pts[0].x, ey = g.pts[n].y - g.pts[0].y;
+  const total = r.walls.reduce((s, w) => s + w.len, 0); if (!(total > 0)) return;
+  let cum = 0; const P = [{ x: g.pts[0].x, y: g.pts[0].y }];
+  for (let k = 1; k <= n; k++) { cum += r.walls[k - 1].len; P.push({ x: g.pts[k].x - ex * cum / total, y: g.pts[k].y - ey * cum / total }); }
+  snapshot();
+  let prevH = null;
+  for (let k = 0; k < n; k++) {
+    const dx = P[k + 1].x - P[k].x, dy = P[k + 1].y - P[k].y, h = Math.atan2(dy, dx) * 180 / Math.PI;
+    r.walls[k].len = Math.hypot(dx, dy);
+    if (k === 0) { r.rot = h; r.walls[0].turn = 0; } else r.walls[k].turn = norm(h - prevH);
+    prevH = h;
+  }
+  commit(); toast('Écart de ' + fmt(Math.hypot(ex, ey) * 1000, 0) + ' mm réparti sur ' + n + ' murs');
+}
+$('#fixClose').onclick = distributeClosure;
 
 /* ---------- Vue 3D ---------- */
 // Prépare les murs pour la 3D : direction, normale extérieure, prolongement aux coins saillants.
