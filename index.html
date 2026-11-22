@@ -84,6 +84,12 @@ summary{cursor:pointer;font-size:14px;color:var(--mut)}
 #toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%) translateY(20px);background:var(--ink);color:#fff;padding:10px 16px;border-radius:12px;font-size:14px;opacity:0;pointer-events:none;transition:.25s;z-index:50;max-width:90vw;text-align:center}
 #toast.show{opacity:1;transform:translateX(-50%)}
 #printArea{display:none}
+#v3d{position:fixed;inset:0;z-index:40;background:#eef1f5;display:flex;flex-direction:column}
+#v3d[hidden]{display:none}
+.v3dbar{display:flex;align-items:center;gap:8px;padding:8px 10px;background:var(--ink);color:#fff;flex-wrap:wrap}
+.v3dbar button{background:#2c3a4b;border-color:#3b4b5e;color:#fff}
+.v3dhint{font-size:13px;color:#cbd5e1}
+#v3dView{flex:1;min-height:0;position:relative}
 @media (orientation:portrait),(max-width:760px){
   main{flex-direction:column}
   aside{width:auto;height:46%;border-left:0;border-top:1px solid var(--line)}
@@ -101,6 +107,7 @@ summary{cursor:pointer;font-size:14px;color:var(--mut)}
   <input id="projName" aria-label="Nom du projet">
   <select id="roomSel" aria-label="Pièce active"></select>
   <button id="addRoom">+ Pièce</button>
+  <button id="btn3d">🧊 3D</button>
   <span class="sp"></span>
   <button id="undoBtn" title="Annuler">↶ Annuler</button>
   <div class="menu">
@@ -239,6 +246,13 @@ summary{cursor:pointer;font-size:14px;color:var(--mut)}
   </aside>
 </main>
 
+<div id="v3d" hidden>
+  <div class="v3dbar">
+    <b>Vue 3D</b><span class="v3dhint">1 doigt : tourner · 2 doigts : zoom et déplacer</span><span class="sp"></span>
+    <button id="v3dCut">✂ Coupe</button><button id="v3dFit">⤢ Recentrer</button><button id="v3dClose">✕ Fermer</button>
+  </div>
+  <div id="v3dView"></div>
+</div>
 <input type="file" id="fileIn" accept=".json,application/json" hidden>
 <div id="printArea"></div>
 <div id="toast"></div>
@@ -256,7 +270,7 @@ const NEW_SVC = '02a6c0d0-0451-4000-b000-fb3210111989';
 const NEW_CHR = '02a6c0d1-0451-4000-b000-fb3210111989';
 const NEW_SYNC = new Uint8Array([0xC0, 0x55, 0x02, 0x01, 0x00, 0x1A]); // active l'envoi auto des mesures
 const LS_KEY = 'planlaser.v1';
-const APP_VERSION = '20';
+const APP_VERSION = '21';
 const CLOSE_TOL = 0.10; // m : en dessous, l'écart de fermeture est une erreur de mesure, pas un mur
 
 const $ = s => document.querySelector(s);
@@ -1229,6 +1243,41 @@ if ('serviceWorker' in navigator && window.isSecureContext && location.protocol 
     }
   }).catch(err => log('Service worker : ' + err.message));
 }
+
+/* ---------- Vue 3D ---------- */
+// Prépare les murs pour la 3D : direction, normale extérieure, prolongement aux coins saillants.
+function model3D() {
+  const T3 = 0.12;
+  return state.rooms.map(r => {
+    const g = geom(r), st = stats(r, g), sign = st.signed >= 0 ? 1 : -1;
+    const segs = g.segs.filter(s => !s.tiny && s.len > 0.001);
+    const closed = r.closed && st.poly.length >= 3, n = segs.length;
+    const W = segs.map(sg => {
+      const ux = (sg.x2 - sg.x1) / sg.len, uy = (sg.y2 - sg.y1) / sg.len;
+      const nin = sign > 0 ? { x: -uy, y: ux } : { x: uy, y: -ux };
+      return { x1: sg.x1, y1: sg.y1, len: sg.len, ux, uy, ox: -nin.x, oy: -nin.y, openings: sg.wall.openings || [], extS: 0, extE: 0 };
+    });
+    const convex = (a, b) => (a.ux * b.uy - a.uy * b.ux) * sign > 0.01;
+    W.forEach((w, i) => {
+      const prev = i > 0 ? W[i - 1] : (closed ? W[n - 1] : null), next = i < n - 1 ? W[i + 1] : (closed ? W[0] : null);
+      if (prev && convex(prev, w)) w.extS = T3;
+      if (next && convex(w, next)) w.extE = T3;
+    });
+    return { name: r.name, height: r.height || 2.5, poly: closed ? st.poly : null, area: st.area != null ? fmt(st.area) + ' m²' : null, walls: W };
+  });
+}
+let v3d = null, v3dCut = false;
+$('#btn3d').onclick = async () => {
+  if (!bboxAll() || !state.rooms.some(r => r.walls.length)) return toast('Le plan est vide');
+  $('#v3d').hidden = false; $('#v3dCut').classList.toggle('on', v3dCut);
+  try {
+    const m = await import('./view3d.js');
+    v3d = m.open($('#v3dView'), model3D(), { cut: v3dCut });
+  } catch (e) { $('#v3d').hidden = true; toast('Vue 3D indisponible : ' + e.message); }
+};
+$('#v3dClose').onclick = () => { if (v3d) v3d.close(); v3d = null; $('#v3d').hidden = true; };
+$('#v3dFit').onclick = () => v3d && v3d.reset();
+$('#v3dCut').onclick = () => { v3dCut = !v3dCut; $('#v3dCut').classList.toggle('on', v3dCut); if (v3d) v3d.rebuild(model3D(), { cut: v3dCut }); };
 
 /* ---------- Démarrage ---------- */
 $('#appVer').textContent = APP_VERSION;
