@@ -138,6 +138,7 @@ summary{cursor:pointer;font-size:14px;color:var(--mut)}
     <section>
       <h3>Télémètre <span id="btDot" class="dot"></span><span id="btTxt">Non connecté</span></h3>
       <div class="row"><button id="btBtn" class="primary" style="flex:1">Connecter le GLM 50 C</button><button id="btMeasure" hidden>🎯 Mesurer</button></div>
+      <div class="row" id="btAllRow"><button id="btAll" style="flex:1;min-height:36px;font-size:13px">Le laser n'apparaît pas ? Afficher tous les appareils</button></div>
       <div id="btWarn" class="warn" hidden>Le Bluetooth web n'est pas disponible ici. Ouvre cette page dans <b>Chrome sur Android</b>, via une adresse <b>https://</b>. Tu peux quand même saisir les longueurs à la main.</div>
       <div id="rmBox" hidden>
         <p class="hint" style="margin-top:10px">🎯 Mesurer depuis :</p>
@@ -270,7 +271,7 @@ const NEW_SVC = '02a6c0d0-0451-4000-b000-fb3210111989';
 const NEW_CHR = '02a6c0d1-0451-4000-b000-fb3210111989';
 const NEW_SYNC = new Uint8Array([0xC0, 0x55, 0x02, 0x01, 0x00, 0x1A]); // active l'envoi auto des mesures
 const LS_KEY = 'planlaser.v1';
-const APP_VERSION = '24';
+const APP_VERSION = '25';
 const CLOSE_TOL = 0.10; // m : en dessous, l'écart de fermeture est une erreur de mesure, pas un mur
 
 const $ = s => document.querySelector(s);
@@ -675,6 +676,7 @@ function setBt(st, txt) {
   b.className = st === 'on' ? '' : 'primary';
   b.disabled = st === 'wait';
   $('#btMeasure').hidden = !(st === 'on' && bt.proto === 'mt');
+  $('#btAllRow').hidden = st === 'on';
   $('#rmBox').hidden = $('#btMeasure').hidden; renderRmRef();
 }
 function crc8(data, iv = 0xAA, poly = 0xA6) {
@@ -697,26 +699,27 @@ function btWrite(chr, bytes, withResponse = true) {
   bt.wq = p.catch(e => log('Écriture : ' + e.message));
   return p;
 }
-async function btClick() {
+const errText = e => (e && e.name ? e.name + ' – ' + e.message : String(e));
+async function btClick(all = false) {
   if (!navigator.bluetooth) { $('#btWarn').hidden = false; return toast('Bluetooth web indisponible dans ce navigateur'); }
   if (bt.dev && bt.dev.gatt.connected) { bt.manual = true; bt.dev.gatt.disconnect(); return; }
   try {
     if (!bt.dev) {
       setBt('wait', 'Choisis ton GLM dans la liste…');
-      bt.dev = await navigator.bluetooth.requestDevice({
-        filters: [{ namePrefix: 'GLM' }, { namePrefix: 'Bosch' }, { services: [MT_SVC] }, { services: [NEW_SVC] }],
-        optionalServices: [MT_SVC, NEW_SVC]
-      });
+      bt.dev = await navigator.bluetooth.requestDevice(all
+        ? { acceptAllDevices: true, optionalServices: [MT_SVC, NEW_SVC] }    // diagnostic : tous les appareils
+        : { filters: [{ namePrefix: 'GLM' }, { namePrefix: 'Bosch' }, { services: [MT_SVC] }, { services: [NEW_SVC] }], optionalServices: [MT_SVC, NEW_SVC] });
+      log('Appareil choisi : ' + (bt.dev.name || '(sans nom)'));
       bt.dev.addEventListener('gattserverdisconnected', onDisconnected);
     }
     await gattConnect();
   } catch (e) {
-    log('Erreur : ' + e.name + ' – ' + e.message);
+    log('Erreur : ' + errText(e));
     setBt('off', 'Non connecté');
     if (bt.dev && bt.dev.gatt.connected) { bt.manual = true; bt.dev.gatt.disconnect(); }
     if (e.name === 'SecurityError') { bt.dev = null; $('#btWarn').hidden = false; toast('Bluetooth bloqué dans cette vue : ouvre la version hébergée en https'); }
-    else if (e.name === 'NotFoundError' && /cancel/i.test(e.message)) { bt.dev = null; }
-    else toast('Connexion impossible : ' + e.message);
+    else if (e && e.name === 'NotFoundError' && /cancel/i.test(e.message)) { bt.dev = null; }
+    else { if (!bt.dev || !bt.proto) bt.dev = null; toast('Connexion impossible : ' + (e && e.message ? e.message : String(e))); }
   }
 }
 async function gattConnect() {
@@ -1054,7 +1057,8 @@ $('#menu').addEventListener('click', e => {
   if (a === 'install' && installEvt) { installEvt.prompt(); installEvt.userChoice.finally(() => { installEvt = null; $('#installItem').hidden = true; }); }
   if (a === 'new' && confirm('Commencer un nouveau projet ? (le projet actuel sera remplacé — enregistre-le avant si besoin)')) { snapshot(); state = newProject(); sel = -1; commit(); fit(); }
 });
-$('#btBtn').onclick = btClick;
+$('#btBtn').onclick = () => btClick(false);
+$('#btAll').onclick = () => { if (bt.dev && bt.dev.gatt.connected) return; bt.dev = null; btClick(true); };
 // Mesure à distance : commande 0x40. Sur le GLM 50 C elle mesure depuis l'avant du boîtier (l'écran du laser
 // ne change pas) ; on ajoute la correction pour revenir à la référence arrière affichée par le laser.
 // La commande 0x40 mesure toujours au même point du boîtier ; une correction par référence ramène au point choisi.
