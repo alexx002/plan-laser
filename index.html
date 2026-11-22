@@ -231,7 +231,7 @@ const NEW_SVC = '02a6c0d0-0451-4000-b000-fb3210111989';
 const NEW_CHR = '02a6c0d1-0451-4000-b000-fb3210111989';
 const NEW_SYNC = new Uint8Array([0xC0, 0x55, 0x02, 0x01, 0x00, 0x1A]); // active l'envoi auto des mesures
 const LS_KEY = 'planlaser.v1';
-const APP_VERSION = '16';
+const APP_VERSION = '17';
 const CLOSE_TOL = 0.10; // m : en dessous, l'écart de fermeture est une erreur de mesure, pas un mur
 
 const $ = s => document.querySelector(s);
@@ -747,10 +747,15 @@ function mtFrame(fr) {
   if (type === 3 && fr[1] === 0x50) return onMtSync(payload);          // mesure envoyée par le laser (GLM 100 C)
   if (type === 3 && fr[1] === 0x55) {                                    // mesure envoyée par le laser (variante 0x55)
     if (payload.length >= 8) {
+      bt.laserActivity = true;
+      // 1er octet : bits 0-1 = référence (0 avant, 1 milieu, 2 arrière), bits 2-3 = mode (1 simple, 2 continu)
+      const refCode = payload[0] & 0x03, mode = (payload[0] >> 2) & 0x03;
+      const ref = { 0: 'front', 1: 'middle', 2: 'back' }[refCode];
+      if (ref && ref !== state.rmRef) { state.rmRef = ref; save(); renderRmRef(); log('Référence du laser : ' + RM_REFS[ref].name + ' (🎯 suit)'); }
       const d = new DataView(payload.buffer).getFloat32(4, true);
       if (!(d > 0)) { log('Laser allumé'); return; }
       lastLaserMeasure = d; lastLaserAt = Date.now();
-      log('Mesure reçue (laser, code réf. 0x' + payload[1].toString(16) + ') · ' + d.toFixed(4) + ' m'); if (isFinite(d) && d < 300) onMeasure(d);
+      log('Mesure reçue (laser, ' + (ref ? RM_REFS[ref].name : 'réf. ?') + (mode === 2 ? ', continu' : mode === 1 ? ', simple' : '') + ') · ' + d.toFixed(4) + ' m'); if (isFinite(d) && d < 300) onMeasure(d);
     }
     return;
   }
@@ -771,10 +776,13 @@ function mtFrame(fr) {
       }
       // Juste après une mesure faite au bouton, le laser renvoie d'abord la valeur affichée au lieu de mesurer :
       // on l'ignore et on redemande une vraie mesure (une seule fois).
-      if (!bt.rmResent && lastLaserMeasure != null && Math.abs(raw - lastLaserMeasure) < 0.0015) {
-        bt.rmResent = true; log('Le laser a renvoyé sa dernière valeur (' + raw.toFixed(4) + ' m) : nouvelle mesure demandée');
+      // Après une action sur le laser (bouton, allumage), sa 1re réponse à 0x40 est une ancienne valeur : on l'écarte.
+      if (bt.laserActivity && !bt.rmResent) {
+        bt.rmResent = true; bt.laserActivity = false;
+        log('Réponse périmée écartée (' + raw.toFixed(4) + ' m) : nouvelle mesure demandée');
         setTimeout(() => remoteMeasure(cal), 300); return;
       }
+      bt.laserActivity = false;
       if (cal) {
         const v = Math.round((lastLaserMeasure - raw) * 10000) / 10000; setRmOffset(v); renderRmRef();
         log('Étalonnage ' + RM_REFS[rmRef()].name + ' : laser ' + lastLaserMeasure.toFixed(4) + ' − tablette ' + raw.toFixed(4) + ' = ' + v.toFixed(4) + ' m');
@@ -975,8 +983,8 @@ $('#btBtn').onclick = btClick;
 // Mesure à distance : commande 0x40. Sur le GLM 50 C elle mesure depuis l'avant du boîtier (l'écran du laser
 // ne change pas) ; on ajoute la correction pour revenir à la référence arrière affichée par le laser.
 // La commande 0x40 mesure toujours au même point du boîtier ; une correction par référence ramène au point choisi.
-// Arrière : 0,106 m mesuré sur le laser d'Alex. Avant et milieu (moitié du boîtier) : à étalonner.
-const RM_REFS = { back: { name: 'arrière', def: 0.106 }, front: { name: 'avant', def: 0 }, middle: { name: 'milieu', def: 0.053 } };
+// Valeurs mesurées sur le GLM 50 C d'Alex (22/11) : arrière 0,106 m, milieu 0,045 m, avant 0.
+const RM_REFS = { back: { name: 'arrière', def: 0.106 }, front: { name: 'avant', def: 0 }, middle: { name: 'milieu', def: 0.045 } };
 const rmRef = () => (RM_REFS[state.rmRef] ? state.rmRef : 'back');
 const rmCalibrated = r => !!(state.rmOffsets && isFinite(state.rmOffsets[r])) || (r === 'back' && isFinite(state.rmOffset));
 const rmOffset = (r = rmRef()) => {
@@ -990,8 +998,7 @@ function renderRmRef() {
   document.querySelectorAll('#rmRef button').forEach(b => b.classList.toggle('on', b.dataset.r === r));
   $('#rmLbl').textContent = 'Correction ' + RM_REFS[r].name + ' (m)';
   $('#rmOffset').value = fmt(rmOffset(r), 3);
-  $('#rmHint').textContent = (r === 'back' || rmCalibrated(r) ? '' : 'Valeur approximative : ') +
-    'pour étalonner, règle le laser sur la même référence (' + RM_REFS[r].name + '), mesure avec son bouton, puis touche Étalonner sans bouger.';
+  $('#rmHint').textContent = 'La référence suit celle réglée sur le laser. Pour étalonner : mesure avec le bouton du laser, puis touche Étalonner sans bouger.';
 }
 $('#rmRef').addEventListener('click', e => {
   const r = e.target.closest('button')?.dataset.r; if (!r) return;
